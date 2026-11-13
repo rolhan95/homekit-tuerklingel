@@ -1,0 +1,14 @@
+{
+  "domain": "homekit_tuerklingel",
+  "name": "HomeKit Türklingel",
+  "after_dependencies": ["homekit", "notify"],
+  "codeowners": ["@rolhan95"],
+  "config_flow": true,
+  "dependencies": ["camera", "http", "image", "webhook"],
+  "documentation": "https://github.com/rolhan95/homekit-tuerklingel",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/rolhan95/homekit-tuerklingel/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
