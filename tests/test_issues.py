@@ -29,6 +29,19 @@ from custom_components.homekit_tuerklingel.repairs import (
 
 from .conftest import CAMERA, SHELLY_HOST, SHELLY_MAC
 
+
+@pytest.fixture(autouse=True)
+def _no_homekit_port_socket():
+    """HomeKit prüft Ports per Test-Socket (auch beim Entladen nach dem Test).
+
+    Unter Linux blockiert das Test-Plugin echte Sockets; deshalb für die ganze
+    Testdauer inkl. Teardown ersetzen.
+    """
+    with patch(
+        "homeassistant.components.homekit.util._get_test_socket", return_value=MagicMock()
+    ):
+        yield
+
 BASE = f"http://{SHELLY_HOST}"
 PROXY_CAMERA = "camera.haustur_kamera"
 
