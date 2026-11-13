@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -35,6 +36,27 @@ WEBHOOK_ID = "test_webhook_id_0123456789"
 def auto_enable_custom_integrations(enable_custom_integrations):
     """Custom-Integrationen in allen Tests erlauben."""
     return
+
+
+@pytest.fixture(autouse=True)
+def _kein_echtes_netz(mock_async_zeroconf):
+    """Tests dürfen nie etwas im echten Netz ankündigen oder öffnen.
+
+    - Zeroconf/mDNS ist durch mock_async_zeroconf ersetzt.
+    - Der HomeKit-Server (HAP) startet nie; Tests, die den Start prüfen, patchen
+      async_start zusätzlich selbst.
+    - Die Port-Prüfung von HomeKit nutzt keinen echten Socket.
+    Hintergrund: Unter Windows ist die Socket-Sperre aufgehoben; ein Testlauf hat
+    sonst Test-Zubehör per mDNS im LAN angekündigt.
+    """
+    with (
+        patch("homeassistant.components.homekit.HomeKit.async_start", AsyncMock()),
+        patch(
+            "homeassistant.components.homekit.util._get_test_socket",
+            return_value=MagicMock(),
+        ),
+    ):
+        yield
 
 
 @pytest.fixture

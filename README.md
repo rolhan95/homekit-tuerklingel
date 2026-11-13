@@ -7,10 +7,10 @@ HomeKit Bridge von Home Assistant, ohne Homebridge, ohne eigenen HomeKit-Server 
 Sie ersetzt das Homebridge-Plugin `homebridge-shelly-doorbell`.
 
 > [!IMPORTANT]
-> **Teststand 0.1.0:** Die Integration wurde bisher **in keinem echten Home Assistant** ausprobiert.
-> Alle unten beschriebenen Funktionen sind im Code vorhanden und werden – soweit angegeben – durch
-> automatische Tests geprüft, ihr Zusammenspiel mit echtem Shelly, echter Kamera und echtem
-> Apple-Home ist aber **noch nicht bestätigt**. Siehe [Teststand](#teststand).
+> **Teststand 0.1.1:** Einrichtung, Webhook, IP-Filter, Entprellung, Entitäten und Proxy-Kamera
+> sind in einem echten Home Assistant mit echtem Shelly 1 und Reolink-Kamera geprüft. Noch **nicht**
+> geprüft: Gong-Impuls am echten Relais, HomeKit-Pairing, Klingeln auf HomePods, Push.
+> Siehe [Teststand](#teststand).
 
 ---
 
@@ -283,11 +283,21 @@ pytest tests --cov=custom_components.homekit_tuerklingel --cov-report=term-missi
 
 ## Teststand
 
-Stand **0.1.0 (2026-11-13)**.
+Stand **0.1.1 (2026-11-13)**.
 
-### Im echten Home Assistant getestet
+### Im echten Home Assistant getestet (HA 2026.11.1, 2026-11-13)
 
-Noch nichts.
+- Installation über HACS (Marketplace), Laden ohne Neustart (HA 2026.11.1)
+- Einrichtung: Verbindungstest zu einem echten Shelly 1 (Gen1, Firmware 1.14.0, ohne Anmeldung),
+  Kamerawahl (Reolink, Sub-Stream), alle Entitäten mit deutschen Namen auf einem Gerät
+- Hinweis „Eingang nicht entkoppelt“: erkennt den Eingangsmodus „action“ richtig
+- Webhook mit GET und POST (`local_only`), Event 1–2 ms nach dem Aufruf
+- IP-Filter: Aufrufe von fremder IP werden mit 403 abgelehnt; abweichende erlaubte IP greift
+- Entprellung: zweiter Aufruf innerhalb von 3 s wird verworfen
+- „Klingelt“ geht nach 5 s aus; „Zuletzt geklingelt“ und Snapshot „Letztes Klingeln“ werden gesetzt
+- Gong-Schalter „aus“: kein Relais-Aufruf
+- Proxy-Kamera liefert das Live-Bild der Reolink-Kamera (auch skaliert)
+- Erreichbarkeit „Shelly erreichbar“ zeigt „an“
 
 ### Durch automatische Tests geprüft (simulierter Shelly, simulierte Kamera)
 
@@ -308,12 +318,12 @@ GitHub Actions). Geprüft sind:
 
 ### Im Code vorhanden, im echten Home Assistant noch nicht getestet
 
-- Zusammenspiel mit echtem Shelly 1 (insbesondere Gong-Dauer mit Nachkommastelle, z. B. `timer=0.5`)
+- Gong-Impuls am echten Shelly-Relais (insbesondere Gong-Dauer mit Nachkommastelle, z. B. `timer=0.5`)
+- Reparatur-Hinweis „HomeKit-Türklingel anlegen“ im echten Home Assistant
 - Echte Reolink-Kamera über die Proxy-Kamera, Live-Video und Snapshot in Apple Home
 - Pairing in der Home-App, Klingelton auf HomePods, Mitteilung auf iPhone/Apple Watch
 - Push-Benachrichtigung über die Companion-App
 - Integrations-Icon (lokale Brand-Bilder, ab Home Assistant 2026.3)
-- Installation über HACS
 
 ## Lizenz
 

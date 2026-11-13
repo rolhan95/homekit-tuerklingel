@@ -3,6 +3,33 @@
 Alle Änderungen an dieser Integration. Jede Änderung erhöht die Version in
 `custom_components/homekit_tuerklingel/manifest.json`; jede Version bekommt hier einen Abschnitt.
 
+## [0.1.1] – 2026-11-13
+
+### Behoben
+
+- Tests: Lokale Testläufe unter Windows konnten Test-Zubehör („Haustür …“) per mDNS im echten Netz
+  ankündigen; Home Assistant im selben Netz zeigte es als neu entdecktes „HomeKit Device“. Zeroconf
+  und der HomeKit-Server sind in allen Tests jetzt ersetzt. Keine Änderung an der Integration selbst.
+
+### Getestet (echter Home Assistant 2026.11.1, Shelly 1 Gen1, Reolink)
+
+- Installation über HACS (Marketplace), Laden ohne Neustart (HA 2026.11.1)
+- Einrichtung: Verbindungstest zu einem echten Shelly 1 (Gen1, Firmware 1.14.0, ohne Anmeldung),
+  Kamerawahl (Reolink, Sub-Stream), alle Entitäten mit deutschen Namen auf einem Gerät
+- Hinweis „Eingang nicht entkoppelt“: erkennt den Eingangsmodus „action“ richtig
+- Webhook mit GET und POST (`local_only`), Event 1–2 ms nach dem Aufruf
+- IP-Filter: Aufrufe von fremder IP werden mit 403 abgelehnt; abweichende erlaubte IP greift
+- Entprellung: zweiter Aufruf innerhalb von 3 s wird verworfen
+- „Klingelt“ geht nach 5 s aus; „Zuletzt geklingelt“ und Snapshot „Letztes Klingeln“ werden gesetzt
+- Gong-Schalter „aus“: kein Relais-Aufruf
+- Proxy-Kamera liefert das Live-Bild der Reolink-Kamera (auch skaliert)
+- Erreichbarkeit „Shelly erreichbar“ zeigt „an“
+
+### Noch nicht getestet
+
+- Gong-Impuls am echten Relais, Reparatur-Hinweis „HomeKit-Türklingel anlegen“, HomeKit-Pairing,
+  HomePods, Push-Benachrichtigung.
+
 ## [0.1.0] – 2026-11-13
 
 Erste Version. Ersetzt das Homebridge-Plugin `homebridge-shelly-doorbell`.
