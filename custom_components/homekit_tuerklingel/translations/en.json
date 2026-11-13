@@ -1,0 +1,177 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up doorbell",
+        "description": "Doorbell button: Shelly 1 (Gen1). The Shelly reports a ring via webhook; its relay drives the mechanical chime. Only enter username and password if login protection (Restrict login) is enabled on the Shelly.",
+        "data": {
+          "name": "Doorbell name",
+          "shelly_host": "IP address or hostname of the Shelly",
+          "shelly_username": "Username (optional)",
+          "shelly_password": "Password (optional)"
+        },
+        "data_description": {
+          "name": "Used as device name and shown in HomeKit, e.g. \"Front door\".",
+          "shelly_host": "Static IP address or hostname in the LAN, e.g. 192.168.1.50. The Shelly must be reachable (connection test).",
+          "shelly_username": "Leave empty if no login is configured on the Shelly.",
+          "shelly_password": "Password of the Shelly login; leave empty if no login is configured."
+        }
+      },
+      "camera": {
+        "title": "Select camera",
+        "description": "The camera is passed through a dedicated camera entity of this doorbell so that HomeKit recognizes camera and button as one video doorbell. Recommendation for Reolink: sub or fluent stream in H.264.{detached_hint}",
+        "data": {
+          "camera_entity": "Camera"
+        },
+        "data_description": {
+          "camera_entity": "Camera entity whose picture HomeKit shows when someone rings, e.g. from Reolink."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Renew Shelly credentials",
+        "description": "The Shelly {host} rejects the stored credentials. Please enter the credentials configured on the Shelly under *Settings → Restrict login*.",
+        "data": {
+          "shelly_username": "Username",
+          "shelly_password": "Password"
+        },
+        "data_description": {
+          "shelly_username": "Leave empty if login has since been disabled on the Shelly.",
+          "shelly_password": "Password of the Shelly login."
+        }
+      },
+      "reconfigure": {
+        "title": "Change doorbell",
+        "data": {
+          "shelly_host": "IP address or hostname of the Shelly",
+          "shelly_username": "Username (optional)",
+          "shelly_password": "Password (optional)",
+          "camera_entity": "Camera"
+        },
+        "description": "Change address, credentials or camera. The Shelly is checked again; it must be the same Shelly (same MAC address).",
+        "data_description": {
+          "shelly_host": "Static IP address or hostname in the LAN, e.g. 192.168.1.50.",
+          "shelly_username": "Leave empty if no login is configured on the Shelly.",
+          "shelly_password": "Leave empty to keep the current password (with the same username).",
+          "camera_entity": "Camera entity whose picture HomeKit shows when someone rings."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "The Shelly cannot be reached. Check IP address and network.",
+      "invalid_auth": "The Shelly rejects username or password.",
+      "not_shelly_gen1": "No first-generation Shelly (Gen1) responds at this address. Shelly Plus/Pro (Gen2 and newer) are not supported.",
+      "unknown": "Unexpected error, see the log for details."
+    },
+    "abort": {
+      "already_configured": "This Shelly is already set up as a doorbell.",
+      "reauth_successful": "Credentials saved.",
+      "reconfigure_successful": "Changes saved.",
+      "unique_id_mismatch": "A different Shelly responds at the new address."
+    },
+    "create_entry": {
+      "default": "The doorbell has been set up.\n\n**Webhook URL for the Shelly:**\n`{webhook_url}`\n\nOn the Shelly (web interface): set *Settings → Button Type → Detached Switch* and *I/O URL actions → BUTTON SWITCHED ON URL* = the URL above, enable and save. The URL is also shown in the doorbell options.\n\nThen let the HomeKit accessory be created under *Settings → Repairs*."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Doorbell options",
+        "description": "**Webhook URL for the Shelly:**\n`{webhook_url}`\n\nEnter it on the Shelly under *I/O URL actions → BUTTON SWITCHED ON URL*. Plain HTTP within the local network only.",
+        "data": {
+          "restrict_ip": "Only accept the webhook from the Shelly's IP",
+          "allowed_ip": "Different allowed IP address or hostname (optional)",
+          "auto_off": "Turn \"Ringing\" off after (seconds)",
+          "connectivity": "Monitor Shelly reachability",
+          "notify_enabled": "Send an additional push notification",
+          "notify_services": "Notification services",
+          "notify_title": "Notification title",
+          "notify_message": "Notification text"
+        },
+        "data_description": {
+          "allowed_ip": "Leave empty = IP address of the Shelly.",
+          "auto_off": "Applies to the binary sensor \"Ringing\" (fallback sensor). The doorbell event itself has no duration.",
+          "notify_services": "notify services, e.g. mobile_app_iphone. The snapshot is attached as an image.",
+          "notify_message": "{name} is replaced by the doorbell name.",
+          "restrict_ip": "Prevents false alarms from the network: webhook calls from other devices are rejected.",
+          "connectivity": "Polls the Shelly regularly and shows the result in the binary sensor \"Shelly reachable\".",
+          "notify_title": "Leave empty = \"Es klingelt\"."
+        }
+      }
+    },
+    "error": {
+      "invalid_ip": "Not a valid IP address or hostname."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "klingelt": {
+        "name": "Ringing"
+      },
+      "shelly_erreichbar": {
+        "name": "Shelly reachable"
+      }
+    },
+    "camera": {
+      "kamera": {
+        "name": "Camera"
+      }
+    },
+    "event": {
+      "klingel": {
+        "name": "Doorbell",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Ring"
+            }
+          }
+        }
+      }
+    },
+    "image": {
+      "letztes_klingeln": {
+        "name": "Last ring"
+      }
+    },
+    "number": {
+      "entprellzeit": {
+        "name": "Debounce time"
+      },
+      "gong_dauer": {
+        "name": "Chime duration"
+      }
+    },
+    "sensor": {
+      "zuletzt_geklingelt": {
+        "name": "Last rung"
+      }
+    },
+    "switch": {
+      "gong": {
+        "name": "Mechanical chime"
+      }
+    }
+  },
+  "issues": {
+    "homekit_einrichten": {
+      "title": "Create HomeKit doorbell for {name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Create HomeKit accessory",
+            "description": "A dedicated HomeKit accessory (mode \"accessory\") is created for the camera {camera_entity_id}. The HomeKit Bridge links this device's doorbell automatically, HomePods chime and the iPhone shows the camera picture.\n\nAfterwards enter the pairing code from the notification in the Home app."
+          }
+        },
+        "abort": {
+          "already_exists": "A HomeKit accessory already exists for {camera_entity_id}.",
+          "camera_missing": "The camera entity {camera_entity_id} is not available yet. Please try again later.",
+          "homekit_failed": "The HomeKit accessory could not be created automatically. Please create it manually: Settings → Devices & services → Add integration → HomeKit Bridge; then in the options of this new bridge select mode \"accessory\" and the camera {camera_entity_id}. See the README for details."
+        }
+      }
+    },
+    "eingang_nicht_entkoppelt": {
+      "title": "Shelly input of {name} is not detached",
+      "description": "The Shelly {host} uses input mode \"{btn_type}\". In this mode the doorbell button switches the relay directly and the switch \"Mechanical chime\" cannot mute the chime.\n\nOn the Shelly select \"Detached Switch\" under *Settings → Button Type*. This notice disappears the next time the doorbell is reloaded."
+    }
+  }
+}

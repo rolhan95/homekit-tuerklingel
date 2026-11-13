@@ -6,14 +6,15 @@
         "description": "Klingeltaster: Shelly 1 (Gen1). Der Shelly meldet das Klingeln per Webhook; das Relais schaltet den mechanischen Gong. Benutzer und Kennwort nur angeben, wenn am Shelly die Anmeldung (Restrict login) aktiv ist.",
         "data": {
           "name": "Name der Klingel",
-          "shelly_host": "IP-Adresse des Shelly",
+          "shelly_host": "IP-Adresse oder Hostname des Shelly",
           "shelly_username": "Benutzername (optional)",
           "shelly_password": "Kennwort (optional)"
         },
         "data_description": {
           "name": "Wird als Gerätename und in HomeKit angezeigt, z. B. „Haustür“.",
-          "shelly_host": "Feste IP im LAN, z. B. 192.168.1.50. Der Shelly muss erreichbar sein (Verbindungstest).",
-          "shelly_username": "Leer lassen, wenn am Shelly keine Anmeldung eingerichtet ist."
+          "shelly_host": "Feste IP-Adresse oder Hostname im LAN, z. B. 192.168.1.50. Der Shelly muss erreichbar sein (Verbindungstest).",
+          "shelly_username": "Leer lassen, wenn am Shelly keine Anmeldung eingerichtet ist.",
+          "shelly_password": "Kennwort der Shelly-Anmeldung; leer lassen, wenn keine Anmeldung eingerichtet ist."
         }
       },
       "camera": {
@@ -21,30 +22,44 @@
         "description": "Die Kamera wird über eine eigene Kamera-Entität dieser Klingel durchgereicht, damit HomeKit Kamera und Klingel als eine Video-Türklingel erkennt. Empfehlung für Reolink: Sub- bzw. Fluent-Stream in H.264.{detached_hint}",
         "data": {
           "camera_entity": "Kamera"
+        },
+        "data_description": {
+          "camera_entity": "Kamera-Entität, deren Bild HomeKit beim Klingeln zeigt, z. B. von Reolink."
         }
       },
       "reauth_confirm": {
         "title": "Shelly-Zugangsdaten erneuern",
-        "description": "Der Shelly {host} lehnt die gespeicherten Zugangsdaten ab.",
+        "description": "Der Shelly {host} lehnt die gespeicherten Zugangsdaten ab. Bitte die Anmeldedaten eingeben, die am Shelly unter *Settings → Restrict login* hinterlegt sind.",
         "data": {
           "shelly_username": "Benutzername",
           "shelly_password": "Kennwort"
+        },
+        "data_description": {
+          "shelly_username": "Leer lassen, wenn die Anmeldung am Shelly inzwischen ausgeschaltet ist.",
+          "shelly_password": "Kennwort der Shelly-Anmeldung."
         }
       },
       "reconfigure": {
         "title": "Klingel ändern",
         "data": {
-          "shelly_host": "IP-Adresse des Shelly",
+          "shelly_host": "IP-Adresse oder Hostname des Shelly",
           "shelly_username": "Benutzername (optional)",
           "shelly_password": "Kennwort (optional)",
           "camera_entity": "Kamera"
+        },
+        "description": "Adresse, Zugangsdaten oder Kamera ändern. Der Shelly wird erneut geprüft; es muss derselbe Shelly sein (gleiche MAC-Adresse).",
+        "data_description": {
+          "shelly_host": "Feste IP-Adresse oder Hostname im LAN, z. B. 192.168.1.50.",
+          "shelly_username": "Leer lassen, wenn am Shelly keine Anmeldung eingerichtet ist.",
+          "shelly_password": "Leer lassen, um das bisherige Kennwort zu behalten (bei gleichem Benutzernamen).",
+          "camera_entity": "Kamera-Entität, deren Bild HomeKit beim Klingeln zeigt."
         }
       }
     },
     "error": {
       "cannot_connect": "Der Shelly ist nicht erreichbar. IP-Adresse und Netzwerk prüfen.",
       "invalid_auth": "Der Shelly lehnt Benutzername oder Kennwort ab.",
-      "not_shelly_gen1": "Unter dieser Adresse antwortet kein Shelly der ersten Generation (Gen1).",
+      "not_shelly_gen1": "Unter dieser Adresse antwortet kein Shelly der ersten Generation (Gen1). Shelly Plus/Pro (Gen2 und neuer) werden nicht unterstützt.",
       "unknown": "Unerwarteter Fehler, Details im Protokoll."
     },
     "abort": {
@@ -64,7 +79,7 @@
         "description": "**Webhook-URL für den Shelly:**\n`{webhook_url}`\n\nAm Shelly unter *I/O URL actions → BUTTON SWITCHED ON URL* eintragen. Nur HTTP im lokalen Netz.",
         "data": {
           "restrict_ip": "Webhook nur von der Shelly-IP annehmen",
-          "allowed_ip": "Abweichende erlaubte IP (optional)",
+          "allowed_ip": "Abweichende erlaubte IP-Adresse oder Hostname (optional)",
           "auto_off": "„Klingelt“ ausschalten nach (Sekunden)",
           "connectivity": "Erreichbarkeit des Shelly überwachen",
           "notify_enabled": "Zusätzliche Push-Benachrichtigung senden",
@@ -76,18 +91,30 @@
           "allowed_ip": "Leer lassen = IP-Adresse des Shelly.",
           "auto_off": "Gilt für den Binärsensor „Klingelt“ (Rückfall-Sensor). Das Klingel-Event selbst hat keine Dauer.",
           "notify_services": "notify-Dienste, z. B. mobile_app_iphone. Der Snapshot wird als Bild angehängt.",
-          "notify_message": "{name} wird durch den Namen der Klingel ersetzt."
+          "notify_message": "{name} wird durch den Namen der Klingel ersetzt.",
+          "restrict_ip": "Schützt vor Fehlalarmen aus dem Netz: Aufrufe des Webhooks von anderen Geräten werden abgewiesen.",
+          "connectivity": "Fragt den Shelly regelmäßig ab und zeigt das Ergebnis im Binärsensor „Shelly erreichbar“.",
+          "notify_title": "Leer lassen = „Es klingelt“."
         }
       }
+    },
+    "error": {
+      "invalid_ip": "Keine gültige IP-Adresse und kein gültiger Hostname."
     }
   },
   "entity": {
     "binary_sensor": {
-      "klingelt": { "name": "Klingelt" },
-      "shelly_erreichbar": { "name": "Shelly erreichbar" }
+      "klingelt": {
+        "name": "Klingelt"
+      },
+      "shelly_erreichbar": {
+        "name": "Shelly erreichbar"
+      }
     },
     "camera": {
-      "kamera": { "name": "Kamera" }
+      "kamera": {
+        "name": "Kamera"
+      }
     },
     "event": {
       "klingel": {
@@ -102,17 +129,27 @@
       }
     },
     "image": {
-      "letztes_klingeln": { "name": "Letztes Klingeln" }
+      "letztes_klingeln": {
+        "name": "Letztes Klingeln"
+      }
     },
     "number": {
-      "entprellzeit": { "name": "Entprellzeit" },
-      "gong_dauer": { "name": "Gong-Dauer" }
+      "entprellzeit": {
+        "name": "Entprellzeit"
+      },
+      "gong_dauer": {
+        "name": "Gong-Dauer"
+      }
     },
     "sensor": {
-      "zuletzt_geklingelt": { "name": "Zuletzt geklingelt" }
+      "zuletzt_geklingelt": {
+        "name": "Zuletzt geklingelt"
+      }
     },
     "switch": {
-      "gong": { "name": "Mechanischer Gong" }
+      "gong": {
+        "name": "Mechanischer Gong"
+      }
     }
   },
   "issues": {

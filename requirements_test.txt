@@ -1,1 +1,15 @@
-pytest-homeassistant-custom-component
+# Testumgebung (passend zu Home Assistant 2026.10.4, Python 3.14)
+pytest-homeassistant-custom-component==0.13.375
+pytest-cov==7.1.0
+
+# Abhaengigkeiten der genutzten Core-Komponenten (aus deren manifest.json)
+# camera
+PyTurboJPEG==1.8.3
+# homekit
+HAP-python==5.0.0
+fnv-hash-fast==2.0.3
+homekit-audio-proxy==1.2.1
+PyQRCode==1.2.1
+base36==0.1.1
+# ffmpeg
+ha-ffmpeg==3.2.2

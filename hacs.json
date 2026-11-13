@@ -1,0 +1,7 @@
+{
+  "name": "HomeKit Türklingel",
+  "homeassistant": "2025.6.0",
+  "render_readme": true,
+  "zip_release": false,
+  "content_in_root": false
+}
