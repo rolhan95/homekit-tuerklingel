@@ -10,12 +10,8 @@ The doorbell button can be anything that can call a URL (Shelly, ESPHome, Tasmot
 anything that already exists as an entity in Home Assistant (Shelly, ESPHome, Zigbee, MQTT, …).
 An existing mechanical chime can optionally be driven by any `switch` entity and muted at any time.
 
-> [!IMPORTANT]
-> **Test status 0.2.0:** Not everything described here has been tested on real hardware. Webhook,
-> IP filter, debouncing, entities and the proxy camera were tested in a real Home Assistant with
-> version 0.1.1. The new 0.2.0 features (entity triggers, chime via `switch`, migration from 0.1.x)
-> are covered by automated tests only so far. **Never** tested for real: HomeKit pairing, HomePods,
-> push notification, chime pulse on a real relay. See [Test status](#test-status).
+> [!NOTE]
+> Some functions have not yet been tested in a real Home Assistant – see [Test status](#test-status).
 
 ---
 
@@ -104,8 +100,8 @@ integration does not talk to any doorbell hardware itself.
 
 ## Requirements
 
-- **Home Assistant 2025.6.0 or newer** (minimum in `hacs.json`). Automated tests run against
-  Home Assistant 2026.10.4; the real-world tests used 2026.11.1. Older versions are not tested.
+- **Home Assistant 2025.6.0 or newer** (minimum in `hacs.json`). Versions older than 2026.10
+  are not tested.
   The integration icon (local brand images) is only shown from Home Assistant 2026.3 on.
 - The **HomeKit Bridge** integration (built into Home Assistant) and an Apple Home with a home hub
   (HomePod or Apple TV) for notifications and the doorbell chime.
@@ -123,8 +119,7 @@ integration does not talk to any doorbell hardware itself.
 1. Open HACS → menu (⋮) top right → **Custom repositories**.
 2. Add repository `https://github.com/rolhan95/homekit-tuerklingel`, type **Integration**.
 3. Search for "HomeKit Türklingel" and **Download**.
-4. If Home Assistant asks for a restart, restart it. (On Home Assistant 2026.11.1 the integration
-   could be added right after downloading, without a restart.)
+4. If Home Assistant asks for a restart, restart it.
 
 ### Manual
 
@@ -166,9 +161,8 @@ URL like a password. If possible, also enable the source filter.
 ## Trigger examples
 
 > [!NOTE]
-> The webhook itself was tested with real GET and POST calls (with 0.1.1). The device configurations
-> below follow the respective manufacturer documentation; none of them has been tested by the author
-> with a real device yet. Replace `192.168.1.10:8123` and `<webhook-id>` with the URL from the options.
+> The Shelly Gen2/Plus/Pro, ESPHome and Tasmota configurations below follow the respective
+> manufacturer documentation and have not been tested with real devices yet. Replace `192.168.1.10:8123` and `<webhook-id>` with the URL from the options.
 
 ### Shelly Gen1 (e.g. Shelly 1) – I/O URL action
 
@@ -344,7 +338,7 @@ reachable", "input not detached" notice). The existing doorbell is **migrated au
   options. Until then the chime is not driven.
 - The entity "Shelly reachable" and the stored Shelly credentials are removed.
 
-Tested with a real 0.1.1 installation (see test status). Note: before 0.2.1 the chime switch was not found if the Shelly device is shared between several integrations (Home Assistant 2026.10+ splits such devices); 0.2.1 fixes this.
+Note: before 0.2.1 the chime switch was not found if the Shelly device is shared between several integrations (Home Assistant 2026.10+ splits such devices); 0.2.1 fixes this.
 
 ## Migrating from homebridge-shelly-doorbell
 
@@ -378,56 +372,21 @@ pytest tests --cov=custom_components.homekit_tuerklingel --cov-report=term-missi
 
 ## Test status
 
-Status **0.2.1 (2026-11-13)**.
+Status **0.2.2**. The following has **not yet been tested** in a real Home Assistant:
 
-### Tested in a real Home Assistant (HA 2026.11.1, Shelly 1 Gen1, Reolink)
+- Push notification via the Companion app (option "Send an additional push notification")
+- Trigger devices other than a Shelly Gen1 URL action: Shelly Gen2/Plus/Pro, ESPHome, Tasmota
+- Entity triggers of type `event`, `button` and `input_button`, and entities from ESPHome, Zigbee or
+  MQTT
+- Allowed sources given as host names (instead of IP addresses)
+- Muting the chime with a decoupled ("detached") Shelly input
+- Automatic assignment of the chime switch when upgrading from 0.1.x to 0.2.1 or newer
+- Repair issue "Create HomeKit doorbell" (fix flow) in a real Home Assistant
+- Audio (`support_audio` in the HomeKit options), notification on Apple Watch
+- Several doorbells in one Home Assistant
+- Home Assistant versions older than 2026.10 (minimum in `hacs.json` is 2025.6.0)
 
-With 0.2.0 (2026-11-13):
-
-- Update 0.1.1 → 0.2.0 via HACS with migration: webhook, source filter (Shelly IP) and camera kept,
-  "Shelly reachable" removed
-- Repair issue "Select chime switch" appears when no switch could be assigned; selecting the switch in
-  the options removes it (the automatic assignment itself did not work in 0.2.0 and is fixed in 0.2.1,
-  see changelog)
-- Entity trigger (`input_boolean`): event 0.2 ms after the state change, snapshot and "Ringing" set
-- Chime muted: the chime switch is not touched
-- If an existing HomeKit bridge includes all cameras, Home Assistant itself creates the HomeKit
-  accessory for the proxy camera on the next start (observed); the repair issue then disappears
-
-With 0.1.1 (still valid in 0.2.x):
-
-- Installation via HACS, adding without restart (HA 2026.11.1)
-- Webhook with GET and POST (`local_only`), event 1–2 ms after the call
-- Source filter: calls from a foreign IP are rejected with 403; a deviating allowed IP works
-- Debouncing: a second call within 3 s is discarded
-- Entities: "Ringing" turns off after 5 s; "Last rung" and snapshot "Last ring" are set
-- Proxy camera delivers the live image of a real Reolink camera (also scaled)
-
-### Covered by automated tests only (0.2.0)
-
-136 tests, 99 % coverage (local Windows run and Linux CI).
-
-- Setup and options: name, camera, webhook with source filter (IP and host name), entity triggers,
-  chime switch
-- Entity triggers: `binary_sensor`/`input_boolean` on change to "on", `event`/`button`/`input_button`
-  on every event; no ring from *unavailable*/*unknown*
-- Chime via `switch`: pulse on/off, muted, errors
-- Migration from 0.1.x: webhook URL kept, allowed IP taken over, chime switch from the Shelly
-  integration or repair issue "Select chime switch"
-- Repair issue and creation of the HomeKit accessory with the real HomeKit integration (without
-  HomeKit server): `linked_doorbell_sensor` points to the doorbell event, `video_codec` is `copy`
-- Push content (title, message, image), diagnostics with redaction
-
-### Not yet tested in a real Home Assistant
-
-- Entity triggers (Shelly, ESPHome, Zigbee, MQTT entities)
-- Chime via `switch`, mute switch and chime duration on real hardware
-- Migration of a real 0.1.x installation
-- Trigger examples with real devices (Shelly Gen1 URL action, Shelly Gen2+, ESPHome, Tasmota)
-- Repair issue "Create HomeKit doorbell" in a real Home Assistant
-- HomeKit pairing, chime on HomePods, notification on iPhone/Apple Watch, live video in Apple Home
-- Push notification via the Companion app
-- Integration icon (local brand images, from Home Assistant 2026.3)
+All functions are also covered by automated tests (see [Development and tests](#development-and-tests)).
 
 ## License
 

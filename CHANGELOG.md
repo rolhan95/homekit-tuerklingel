@@ -3,6 +3,17 @@
 Alle Änderungen an dieser Integration. Jede Änderung erhöht die Version in
 `custom_components/homekit_tuerklingel/manifest.json`; jede Version bekommt hier einen Abschnitt.
 
+## [0.2.2] – 2026-11-13
+
+### Geändert
+
+- Dokumentation (README, README.de.md, Änderungsprotokoll): Der Teststand nennt nur noch, was in einem
+  echten Home Assistant noch nicht getestet ist. Keine Änderung am Code.
+
+### Noch nicht getestet
+
+- Siehe README, Abschnitt „Teststand“.
+
 ## [0.2.1] – 2026-11-13
 
 ### Behoben
@@ -11,14 +22,6 @@ Alle Änderungen an dieser Integration. Jede Änderung erhöht die Version in
   Integrationen gehört (Home Assistant teilt solche Geräte seit 2026.10 auf; die Entität zeigt dann auf
   die alte, zusammengesetzte Geräte-ID). Die Suche geht jetzt über die Entitäten. Wer bereits auf 0.2.0
   umgestellt wurde, wählt den Gong-Schalter einmal in den Optionen (Hinweis „Gong-Schalter wählen“).
-
-### Getestet (echter Home Assistant 2026.11.1, Shelly 1 Gen1, Reolink, mit 0.2.0)
-
-- Update 0.1.1 → 0.2.0 über HACS: Migration von Webhook, Quellfilter und Kamera; Hinweis
-  „Gong-Schalter wählen“ und dessen Entfernen über die Optionen
-- Entitäts-Auslöser (`input_boolean`), Gong stumm
-- Automatisches Anlegen des HomeKit-Zubehörs durch eine vorhandene Bridge, die alle Kameras aufnimmt
-- 136 automatische Tests, Abdeckung 99 %
 
 ### Noch nicht getestet
 
@@ -72,17 +75,6 @@ beliebige Kamera. Sie spricht selbst mit keiner Klingel-Hardware mehr.
 - Das Stummschalten des Gongs wirkt weiterhin nur, wenn der Taster das Relais nicht selbst schaltet
   (Shelly: „Detached“).
 
-### Getestet
-
-<!-- KOORDINATOR: Anzahl Tests/Abdeckung und die Ergebnisse des Live-Tests mit 0.2.0 eintragen. -->
-
-- Automatische Tests (pytest-homeassistant-custom-component, Python 3.14): Einrichtung und Optionen,
-  Webhook mit Quellfilter (IP und Hostname), Entitäts-Auslöser, Entprellung, Gong per `switch`,
-  Migration aus 0.1.x, Entitäten, Proxy-Kamera, Reparatur-Hinweise, Push-Inhalt, Diagnose.
-- Im echten Home Assistant mit 0.1.1 geprüft und in 0.2.0 weiter vorhanden (erneuter Live-Test mit
-  0.2.0 steht aus): Installation über HACS, Webhook GET/POST mit 1–2 ms bis zum Event, IP-Filter 403,
-  Entprellung, Entitäten, Proxy-Kamera mit echter Reolink.
-
 ### Noch nicht getestet
 
 - Im echten Home Assistant: Entitäts-Auslöser, Gong per `switch`, Migration einer echten
@@ -97,20 +89,6 @@ beliebige Kamera. Sie spricht selbst mit keiner Klingel-Hardware mehr.
 - Tests: Lokale Testläufe unter Windows konnten Test-Zubehör („Haustür …“) per mDNS im echten Netz
   ankündigen; Home Assistant im selben Netz zeigte es als neu entdecktes „HomeKit Device“. Zeroconf
   und der HomeKit-Server sind in allen Tests jetzt ersetzt. Keine Änderung an der Integration selbst.
-
-### Getestet (echter Home Assistant 2026.11.1, Shelly 1 Gen1, Reolink)
-
-- Installation über HACS (Marketplace), Laden ohne Neustart (HA 2026.11.1)
-- Einrichtung: Verbindungstest zu einem echten Shelly 1 (Gen1, Firmware 1.14.0, ohne Anmeldung),
-  Kamerawahl (Reolink, Sub-Stream), alle Entitäten mit deutschen Namen auf einem Gerät
-- Hinweis „Eingang nicht entkoppelt“: erkennt den Eingangsmodus „action“ richtig
-- Webhook mit GET und POST (`local_only`), Event 1–2 ms nach dem Aufruf
-- IP-Filter: Aufrufe von fremder IP werden mit 403 abgelehnt; abweichende erlaubte IP greift
-- Entprellung: zweiter Aufruf innerhalb von 3 s wird verworfen
-- „Klingelt“ geht nach 5 s aus; „Zuletzt geklingelt“ und Snapshot „Letztes Klingeln“ werden gesetzt
-- Gong-Schalter „aus“: kein Relais-Aufruf
-- Proxy-Kamera liefert das Live-Bild der Reolink-Kamera (auch skaliert)
-- Erreichbarkeit „Shelly erreichbar“ zeigt „an“
 
 ### Noch nicht getestet
 
@@ -138,13 +116,6 @@ Erste Version. Ersetzt das Homebridge-Plugin `homebridge-shelly-doorbell`.
 - Diagnose-Download und Debug-Protokoll (Quell-IP, Entprellung, Latenz).
 - Integrations-Icon als lokales Brand-Bild (`brand/icon.png`, ab Home Assistant 2026.3).
 - HACS-Unterstützung, GitHub-Actions für Tests (pytest, ≥ 90 % Abdeckung), hassfest und HACS-Prüfung.
-
-### Getestet
-
-- Automatische Tests: 116 Tests, Abdeckung 99 % (HA 2026.10.4): Einrichtung, Webhook GET/POST,
-  IP-Filter, Entprellung, Gong/Relais, Entitäten, Proxy-Kamera, Reparatur-Hinweise inkl. Anlegen des
-  HomeKit-Zubehörs mit automatischer Klingel-Verknüpfung, Push-Inhalt, Diagnose.
-- In einem echten Home Assistant: noch nichts.
 
 ### Noch nicht getestet
 

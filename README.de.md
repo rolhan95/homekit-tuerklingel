@@ -11,13 +11,8 @@ oder alles, was in Home Assistant schon als Entität vorhanden ist (Shelly, ESPH
 Ein vorhandener mechanischer Gong lässt sich optional über eine beliebige `switch`-Entität ansteuern
 und jederzeit stumm schalten.
 
-> [!IMPORTANT]
-> **Teststand 0.2.0:** Nicht alles, was hier beschrieben ist, wurde mit echter Hardware geprüft.
-> Webhook, IP-Filter, Entprellung, Entitäten und Proxy-Kamera wurden mit Version 0.1.1 in einem
-> echten Home Assistant getestet. Die neuen Funktionen von 0.2.0 (Entitäts-Auslöser, Gong per
-> `switch`, Migration aus 0.1.x) sind bisher nur durch automatische Tests geprüft. **Nie** echt
-> getestet: HomeKit-Pairing, HomePods, Push-Benachrichtigung, Gong-Impuls an einem echten Relais.
-> Siehe [Teststand](#teststand).
+> [!NOTE]
+> Einige Funktionen sind in einem echten Home Assistant noch nicht getestet – siehe [Teststand](#teststand).
 
 ---
 
@@ -107,8 +102,7 @@ Geräteprotokoll – die Integration spricht selbst mit keiner Klingel-Hardware.
 
 ## Voraussetzungen
 
-- **Home Assistant 2025.6.0 oder neuer** (Mindestversion in `hacs.json`). Automatisch getestet wird
-  gegen Home Assistant 2026.10.4, die Tests im echten Betrieb liefen mit 2026.11.1. Ältere Versionen
+- **Home Assistant 2025.6.0 oder neuer** (Mindestversion in `hacs.json`). Versionen älter als 2026.10
   sind nicht geprüft. Das Integrations-Icon (lokale Brand-Bilder) zeigt Home Assistant erst ab 2026.3.
 - Integration **HomeKit Bridge** (in Home Assistant enthalten) und ein Apple-Home-Zuhause mit
   Steuerzentrale (HomePod oder Apple TV) für Mitteilungen und Klingelton.
@@ -126,8 +120,7 @@ Geräteprotokoll – die Integration spricht selbst mit keiner Klingel-Hardware.
 1. HACS öffnen → Menü (⋮) oben rechts → **Benutzerdefinierte Repositories**.
 2. Repository `https://github.com/rolhan95/homekit-tuerklingel`, Typ **Integration**, hinzufügen.
 3. „HomeKit Türklingel“ suchen und **Herunterladen**.
-4. Fordert Home Assistant einen Neustart an, neu starten. (Unter Home Assistant 2026.11.1 ließ sich
-   die Integration direkt nach dem Herunterladen ohne Neustart hinzufügen.)
+4. Fordert Home Assistant einen Neustart an, neu starten.
 
 ### Manuell
 
@@ -170,9 +163,8 @@ und lang – die URL wie ein Kennwort behandeln. Wenn möglich zusätzlich den Q
 ## Beispiele für Auslöser
 
 > [!NOTE]
-> Der Webhook selbst wurde mit echten GET- und POST-Aufrufen geprüft (mit 0.1.1). Die folgenden
-> Gerätekonfigurationen folgen der jeweiligen Herstellerdokumentation; keine davon wurde bisher vom
-> Autor mit einem echten Gerät getestet. `192.168.1.10:8123` und `<webhook-id>` durch die URL aus den
+> Die folgenden Konfigurationen für Shelly Gen2/Plus/Pro, ESPHome und Tasmota folgen der jeweiligen
+> Herstellerdokumentation und wurden noch nicht mit echten Geräten getestet. `192.168.1.10:8123` und `<webhook-id>` durch die URL aus den
 > Optionen ersetzen.
 
 ### Shelly Gen1 (z. B. Shelly 1) – I/O URL action
@@ -359,7 +351,7 @@ umgestellt**:
   kein Gong angesteuert.
 - Die Entität „Shelly erreichbar“ und die gespeicherten Shelly-Zugangsdaten werden entfernt.
 
-Mit einer echten 0.1.1-Installation getestet (siehe Teststand). Hinweis: Vor 0.2.1 wurde der Gong-Schalter nicht gefunden, wenn das Shelly-Gerät zu mehreren Integrationen gehört (Home Assistant teilt solche Geräte seit 2026.10 auf); 0.2.1 behebt das.
+Hinweis: Vor 0.2.1 wurde der Gong-Schalter nicht gefunden, wenn das Shelly-Gerät zu mehreren Integrationen gehört (Home Assistant teilt solche Geräte seit 2026.10 auf); 0.2.1 behebt das.
 
 ## Umstieg von homebridge-shelly-doorbell
 
@@ -393,59 +385,21 @@ pytest tests --cov=custom_components.homekit_tuerklingel --cov-report=term-missi
 
 ## Teststand
 
-Stand **0.2.1 (2026-11-13)**.
+Stand **0.2.2**. Folgendes wurde in einem echten Home Assistant **noch nicht getestet**:
 
-### Im echten Home Assistant getestet (HA 2026.11.1, Shelly 1 Gen1, Reolink)
+- Push-Benachrichtigung über die Companion-App (Option „Zusätzliche Push-Benachrichtigung senden“)
+- Auslöser-Geräte außer einer Shelly-Gen1-URL-Aktion: Shelly Gen2/Plus/Pro, ESPHome, Tasmota
+- Entitäts-Auslöser vom Typ `event`, `button` und `input_button` sowie Entitäten aus ESPHome, Zigbee
+  oder MQTT
+- Erlaubte Quellen als Hostnamen (statt IP-Adressen)
+- Stummschalten des Gongs mit entkoppeltem („Detached“) Shelly-Eingang
+- Automatische Zuordnung des Gong-Schalters beim Update von 0.1.x auf 0.2.1 oder neuer
+- Reparatur-Hinweis „HomeKit-Türklingel anlegen“ (Reparatur-Ablauf) in einem echten Home Assistant
+- Audio (`support_audio` in den HomeKit-Optionen), Mitteilung auf der Apple Watch
+- Mehrere Klingeln in einem Home Assistant
+- Home-Assistant-Versionen älter als 2026.10 (Mindestversion in `hacs.json` ist 2025.6.0)
 
-Mit 0.2.0 (2026-11-13):
-
-- Update 0.1.1 → 0.2.0 über HACS mit Migration: Webhook, Quellfilter (Shelly-IP) und Kamera
-  übernommen, „Shelly erreichbar“ entfernt
-- Hinweis „Gong-Schalter wählen“ erscheint, wenn kein Schalter zugeordnet werden konnte; Auswahl in
-  den Optionen entfernt ihn (die automatische Zuordnung selbst griff in 0.2.0 nicht und ist in 0.2.1
-  behoben, siehe Änderungsprotokoll)
-- Entitäts-Auslöser (`input_boolean`): Event 0,2 ms nach dem Zustandswechsel, Snapshot und „Klingelt“
-  gesetzt
-- Gong stumm: Der Gong-Schalter wird nicht geschaltet
-- Nimmt eine vorhandene HomeKit-Bridge alle Kameras auf, legt Home Assistant das HomeKit-Zubehör für
-  die Proxy-Kamera beim nächsten Start selbst an (beobachtet); der Reparatur-Hinweis verschwindet dann
-
-Mit 0.1.1 (gilt in 0.2.x weiter):
-
-- Installation über HACS, Hinzufügen ohne Neustart (HA 2026.11.1)
-- Webhook mit GET und POST (`local_only`), Event 1–2 ms nach dem Aufruf
-- Quellfilter: Aufrufe von fremder IP werden mit 403 abgelehnt; abweichende erlaubte IP greift
-- Entprellung: zweiter Aufruf innerhalb von 3 s wird verworfen
-- Entitäten: „Klingelt“ geht nach 5 s aus; „Zuletzt geklingelt“ und Snapshot „Letztes Klingeln“
-  werden gesetzt
-- Proxy-Kamera liefert das Live-Bild einer echten Reolink-Kamera (auch skaliert)
-
-### Nur durch automatische Tests geprüft (0.2.0)
-
-136 Tests, Abdeckung 99 % (lokaler Lauf unter Windows und Linux-CI).
-
-- Einrichtung und Optionen: Name, Kamera, Webhook mit Quellfilter (IP und Hostname),
-  Entitäts-Auslöser, Gong-Schalter
-- Entitäts-Auslöser: `binary_sensor`/`input_boolean` beim Wechsel auf „an“,
-  `event`/`button`/`input_button` bei jedem Ereignis; kein Klingeln aus *nicht verfügbar*/*unbekannt*
-- Gong per `switch`: Impuls ein/aus, stumm, Fehler
-- Migration aus 0.1.x: Webhook-URL bleibt, erlaubte IP wird übernommen, Gong-Schalter aus der
-  Shelly-Integration bzw. Reparatur-Hinweis „Gong-Schalter wählen“
-- Reparatur-Hinweis und Anlegen des HomeKit-Zubehörs mit der echten HomeKit-Integration (ohne
-  HomeKit-Server): `linked_doorbell_sensor` zeigt auf das Klingel-Event, `video_codec` ist `copy`
-- Push-Inhalt (Titel, Text, Bild), Diagnose mit Schwärzung
-
-### Im echten Home Assistant noch nicht getestet
-
-- Entitäts-Auslöser (Entitäten aus Shelly, ESPHome, Zigbee, MQTT)
-- Gong per `switch`, Stummschalter und Gong-Dauer an echter Hardware
-- Migration einer echten 0.1.x-Installation
-- Beispiele für Auslöser mit echten Geräten (Shelly-Gen1-URL-Action, Shelly Gen2+, ESPHome, Tasmota)
-- Reparatur-Hinweis „HomeKit-Türklingel anlegen“ im echten Home Assistant
-- HomeKit-Pairing, Klingelton auf HomePods, Mitteilung auf iPhone/Apple Watch, Live-Video in
-  Apple Home
-- Push-Benachrichtigung über die Companion-App
-- Integrations-Icon (lokale Brand-Bilder, ab Home Assistant 2026.3)
+Alle Funktionen sind zusätzlich durch automatische Tests abgedeckt (siehe [Entwicklung und Tests](#entwicklung-und-tests)).
 
 ## Lizenz
 
