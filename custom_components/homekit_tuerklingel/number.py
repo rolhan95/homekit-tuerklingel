@@ -1,4 +1,4 @@
-"""Plattform number: Entprellzeit und Gong-Dauer."""
+"""Plattform number: Entprellzeit und (nur mit Gong-Schalter) Gong-Dauer."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from .const import (
 )
 from .entity import TuerklingelEntity
 from .hub import TuerklingelHub
+from .switch import async_remove_stale_entity
 
 if TYPE_CHECKING:
     from . import TuerklingelConfigEntry
@@ -74,9 +75,13 @@ async def async_setup_entry(
     entry: TuerklingelConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Zahlen-Entitäten anlegen."""
+    """Zahlen-Entitäten anlegen; Gong-Dauer nur, wenn ein Gong-Schalter konfiguriert ist."""
     hub = entry.runtime_data
-    async_add_entities(TuerklingelNumber(hub, desc) for desc in NUMBERS)
+    descriptions = list(NUMBERS)
+    if hub.gong_entity_id is None:
+        descriptions = [d for d in NUMBERS if d.key != KEY_GONG_DURATION]
+        async_remove_stale_entity(hass, "number", f"{entry.entry_id}_{KEY_GONG_DURATION}")
+    async_add_entities(TuerklingelNumber(hub, desc) for desc in descriptions)
 
 
 class TuerklingelNumber(TuerklingelEntity, RestoreNumber):

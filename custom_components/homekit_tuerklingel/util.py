@@ -12,7 +12,7 @@ def webhook_path(webhook_id: str) -> str:
 
 
 def async_get_webhook_url(hass: HomeAssistant, webhook_id: str) -> str:
-    """URL für die Shelly-URL-Action (nur LAN, http).
+    """URL des Webhooks für das auslösende Gerät (nur LAN, http).
 
     Bevorzugt die interne URL von Home Assistant; fällt auf die lokale IP und
     den HTTP-Port zurück. Externe/Cloud-URLs werden bewusst nicht verwendet,

@@ -3,112 +3,89 @@
     "step": {
       "user": {
         "title": "Türklingel einrichten",
-        "description": "Klingeltaster: Shelly 1 (Gen1). Der Shelly meldet das Klingeln per Webhook; das Relais schaltet den mechanischen Gong. Benutzer und Kennwort nur angeben, wenn am Shelly die Anmeldung (Restrict login) aktiv ist.",
+        "description": "Eine Klingel verbindet einen Klingel-Auslöser mit einer Kamera, damit HomeKit beide als eine Video-Türklingel erkennt. Auslöser kann ein Webhook (HTTP-Aufruf aus dem LAN) und/oder eine beliebige Home-Assistant-Entität sein. Ein mechanischer Gong kann optional über eine switch-Entität angesteuert werden.",
         "data": {
           "name": "Name der Klingel",
-          "shelly_host": "IP-Adresse oder Hostname des Shelly",
-          "shelly_username": "Benutzername (optional)",
-          "shelly_password": "Kennwort (optional)"
+          "camera_entity": "Kamera",
+          "webhook_enabled": "Klingeln per Webhook annehmen",
+          "trigger_entities": "Auslöser-Entitäten (optional)",
+          "gong_entity": "Gong-Schalter (optional)"
         },
         "data_description": {
           "name": "Wird als Gerätename und in HomeKit angezeigt, z. B. „Haustür“.",
-          "shelly_host": "Feste IP-Adresse oder Hostname im LAN, z. B. 192.168.1.50. Der Shelly muss erreichbar sein (Verbindungstest).",
-          "shelly_username": "Leer lassen, wenn am Shelly keine Anmeldung eingerichtet ist.",
-          "shelly_password": "Kennwort der Shelly-Anmeldung; leer lassen, wenn keine Anmeldung eingerichtet ist."
+          "camera_entity": "Kamera-Entität, deren Bild HomeKit beim Klingeln zeigt. Jede Kamera kann nur zu einer Klingel gehören.",
+          "webhook_enabled": "Der Klingeltaster ruft beim Drücken eine Webhook-URL von Home Assistant auf (GET oder POST, nur im LAN). Die URL wird im nächsten Schritt angezeigt.",
+          "trigger_entities": "Binärsensoren und input_boolean klingeln beim Wechsel auf „an“, event-, button- und input_button-Entitäten bei jedem neuen Ereignis bzw. Druck.",
+          "gong_entity": "switch-Entität, die beim Klingeln für die eingestellte Gong-Dauer eingeschaltet wird, z. B. ein Relais. Leer lassen, wenn kein Gong angesteuert werden soll."
         }
       },
-      "camera": {
-        "title": "Kamera wählen",
-        "description": "Die Kamera wird über eine eigene Kamera-Entität dieser Klingel durchgereicht, damit HomeKit Kamera und Klingel als eine Video-Türklingel erkennt. Empfehlung für Reolink: Sub- bzw. Fluent-Stream in H.264.{detached_hint}",
+      "webhook": {
+        "title": "Webhook",
+        "description": "**Webhook-URL:**\n`{webhook_url}`\n\nDiese URL im Klingeltaster als Aktion beim Drücken eintragen. Geeignet ist jedes Gerät, das bei einem Tastendruck eine HTTP-Adresse aufruft, z. B. Shelly Gen1 („I/O URL actions“), Shelly Gen2 und neuer („Actions“ bzw. „Webhooks“), ESPHome (http_request) oder Tasmota (WebSend). Nur HTTP im lokalen Netz; aus dem Internet ist der Webhook nicht erreichbar. Die URL steht später auch in den Optionen der Klingel.",
         "data": {
-          "camera_entity": "Kamera"
+          "restrict_ip": "Webhook nur von bestimmten Geräten annehmen",
+          "allowed_sources": "Erlaubte Geräte (IP-Adressen oder Hostnamen)"
         },
         "data_description": {
-          "camera_entity": "Kamera-Entität, deren Bild HomeKit beim Klingeln zeigt, z. B. von Reolink."
-        }
-      },
-      "reauth_confirm": {
-        "title": "Shelly-Zugangsdaten erneuern",
-        "description": "Der Shelly {host} lehnt die gespeicherten Zugangsdaten ab. Bitte die Anmeldedaten eingeben, die am Shelly unter *Settings → Restrict login* hinterlegt sind.",
-        "data": {
-          "shelly_username": "Benutzername",
-          "shelly_password": "Kennwort"
-        },
-        "data_description": {
-          "shelly_username": "Leer lassen, wenn die Anmeldung am Shelly inzwischen ausgeschaltet ist.",
-          "shelly_password": "Kennwort der Shelly-Anmeldung."
-        }
-      },
-      "reconfigure": {
-        "title": "Klingel ändern",
-        "data": {
-          "shelly_host": "IP-Adresse oder Hostname des Shelly",
-          "shelly_username": "Benutzername (optional)",
-          "shelly_password": "Kennwort (optional)",
-          "camera_entity": "Kamera"
-        },
-        "description": "Adresse, Zugangsdaten oder Kamera ändern. Der Shelly wird erneut geprüft; es muss derselbe Shelly sein (gleiche MAC-Adresse).",
-        "data_description": {
-          "shelly_host": "Feste IP-Adresse oder Hostname im LAN, z. B. 192.168.1.50.",
-          "shelly_username": "Leer lassen, wenn am Shelly keine Anmeldung eingerichtet ist.",
-          "shelly_password": "Leer lassen, um das bisherige Kennwort zu behalten (bei gleichem Benutzernamen).",
-          "camera_entity": "Kamera-Entität, deren Bild HomeKit beim Klingeln zeigt."
+          "restrict_ip": "Empfohlen: Aufrufe des Webhooks von anderen Geräten werden abgewiesen. Schützt vor Fehlalarmen aus dem Netz.",
+          "allowed_sources": "Kommagetrennte Liste, z. B. 192.168.1.50, klingel.local. Pflicht, wenn die Beschränkung eingeschaltet ist. Hostnamen werden beim Laden der Klingel aufgelöst."
         }
       }
     },
     "error": {
-      "cannot_connect": "Der Shelly ist nicht erreichbar. IP-Adresse und Netzwerk prüfen.",
-      "invalid_auth": "Der Shelly lehnt Benutzername oder Kennwort ab.",
-      "not_shelly_gen1": "Unter dieser Adresse antwortet kein Shelly der ersten Generation (Gen1). Shelly Plus/Pro (Gen2 und neuer) werden nicht unterstützt.",
-      "unknown": "Unerwarteter Fehler, Details im Protokoll."
-    },
-    "abort": {
-      "already_configured": "Dieser Shelly ist bereits als Klingel eingerichtet.",
-      "reauth_successful": "Zugangsdaten gespeichert.",
-      "reconfigure_successful": "Änderungen gespeichert.",
-      "unique_id_mismatch": "Unter der neuen Adresse antwortet ein anderer Shelly."
+      "name_required": "Bitte einen Namen angeben.",
+      "no_trigger": "Bitte den Webhook einschalten oder mindestens eine Auslöser-Entität wählen.",
+      "camera_in_use": "Diese Kamera gehört bereits zu einer anderen Klingel. Jede Kamera kann nur einmal verwendet werden.",
+      "invalid_source": "Mindestens ein Eintrag ist keine gültige IP-Adresse und kein gültiger Hostname.",
+      "source_required": "Bitte mindestens eine IP-Adresse oder einen Hostnamen angeben oder die Beschränkung ausschalten."
     },
     "create_entry": {
-      "default": "Die Klingel ist eingerichtet.\n\n**Webhook-URL für den Shelly:**\n`{webhook_url}`\n\nAm Shelly (Weboberfläche): *Settings → Button Type → Detached Switch* und *I/O URL actions → BUTTON SWITCHED ON URL* = obige URL, aktivieren und speichern. Die URL steht auch in den Optionen der Klingel.\n\nAnschließend unter *Einstellungen → Reparaturen* das HomeKit-Zubehör anlegen lassen."
+      "default": "Die Klingel ist eingerichtet.\n\n**Webhook-URL** („—“ = Webhook ausgeschaltet):\n{webhook_hint}\n\nDie URL und alle Einstellungen lassen sich jederzeit in den Optionen der Klingel ablesen bzw. ändern. Anschließend unter *Einstellungen → System → Reparaturen* das HomeKit-Zubehör anlegen lassen."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Optionen der Klingel",
-        "description": "**Webhook-URL für den Shelly:**\n`{webhook_url}`\n\nAm Shelly unter *I/O URL actions → BUTTON SWITCHED ON URL* eintragen. Nur HTTP im lokalen Netz.",
+        "description": "**Webhook-URL** („—“ = Webhook ausgeschaltet):\n{webhook_url}\n\nGeeignet ist jedes Gerät, das bei einem Tastendruck eine HTTP-Adresse aufruft, z. B. Shelly Gen1 („I/O URL actions“), Shelly Gen2 und neuer („Actions“ bzw. „Webhooks“), ESPHome (http_request) oder Tasmota (WebSend). Nur HTTP im lokalen Netz; aus dem Internet ist der Webhook nicht erreichbar.",
         "data": {
-          "restrict_ip": "Webhook nur von der Shelly-IP annehmen",
-          "allowed_ip": "Abweichende erlaubte IP-Adresse oder Hostname (optional)",
+          "camera_entity": "Kamera",
+          "webhook_enabled": "Klingeln per Webhook annehmen",
+          "restrict_ip": "Webhook nur von bestimmten Geräten annehmen",
+          "allowed_sources": "Erlaubte Geräte (IP-Adressen oder Hostnamen)",
+          "trigger_entities": "Auslöser-Entitäten",
+          "gong_entity": "Gong-Schalter",
           "auto_off": "„Klingelt“ ausschalten nach (Sekunden)",
-          "connectivity": "Erreichbarkeit des Shelly überwachen",
           "notify_enabled": "Zusätzliche Push-Benachrichtigung senden",
           "notify_services": "Benachrichtigungsdienste",
           "notify_title": "Titel der Benachrichtigung",
           "notify_message": "Text der Benachrichtigung"
         },
         "data_description": {
-          "allowed_ip": "Leer lassen = IP-Adresse des Shelly.",
-          "auto_off": "Gilt für den Binärsensor „Klingelt“ (Rückfall-Sensor). Das Klingel-Event selbst hat keine Dauer.",
-          "notify_services": "notify-Dienste, z. B. mobile_app_iphone. Der Snapshot wird als Bild angehängt.",
-          "notify_message": "{name} wird durch den Namen der Klingel ersetzt.",
-          "restrict_ip": "Schützt vor Fehlalarmen aus dem Netz: Aufrufe des Webhooks von anderen Geräten werden abgewiesen.",
-          "connectivity": "Fragt den Shelly regelmäßig ab und zeigt das Ergebnis im Binärsensor „Shelly erreichbar“.",
-          "notify_title": "Leer lassen = „Es klingelt“."
+          "camera_entity": "Kamera-Entität, deren Bild HomeKit beim Klingeln zeigt. Nach einem Wechsel muss das HomeKit-Zubehör ggf. neu angelegt werden.",
+          "webhook_enabled": "Der Klingeltaster ruft beim Drücken die obige Webhook-URL auf (GET oder POST, nur im LAN).",
+          "restrict_ip": "Empfohlen: Aufrufe des Webhooks von anderen Geräten werden abgewiesen.",
+          "allowed_sources": "Kommagetrennte Liste, z. B. 192.168.1.50, klingel.local. Pflicht, wenn die Beschränkung eingeschaltet ist.",
+          "trigger_entities": "Binärsensoren und input_boolean klingeln beim Wechsel auf „an“, event-, button- und input_button-Entitäten bei jedem neuen Ereignis bzw. Druck.",
+          "gong_entity": "switch-Entität, die beim Klingeln für die Gong-Dauer eingeschaltet wird. Leer lassen = kein Gong.",
+          "auto_off": "Gilt für den Binärsensor „Klingelt“. Das Klingel-Event selbst hat keine Dauer.",
+          "notify_services": "notify-Dienste, z. B. mobile_app_mein_telefon. Der Snapshot wird als Bild angehängt.",
+          "notify_title": "Leer lassen = „Es klingelt“.",
+          "notify_message": "{name} wird durch den Namen der Klingel ersetzt."
         }
       }
     },
     "error": {
-      "invalid_ip": "Keine gültige IP-Adresse und kein gültiger Hostname."
+      "no_trigger": "Bitte den Webhook einschalten oder mindestens eine Auslöser-Entität wählen.",
+      "camera_in_use": "Diese Kamera gehört bereits zu einer anderen Klingel. Jede Kamera kann nur einmal verwendet werden.",
+      "invalid_source": "Mindestens ein Eintrag ist keine gültige IP-Adresse und kein gültiger Hostname.",
+      "source_required": "Bitte mindestens eine IP-Adresse oder einen Hostnamen angeben oder die Beschränkung ausschalten."
     }
   },
   "entity": {
     "binary_sensor": {
       "klingelt": {
         "name": "Klingelt"
-      },
-      "shelly_erreichbar": {
-        "name": "Shelly erreichbar"
       }
     },
     "camera": {
@@ -159,7 +136,7 @@
         "step": {
           "confirm": {
             "title": "HomeKit-Zubehör anlegen",
-            "description": "Es wird ein eigenes HomeKit-Zubehör (Modus „Zubehör“) für die Kamera {camera_entity_id} angelegt. Die HomeKit Bridge verknüpft die Klingel dieses Geräts automatisch, HomePods klingeln und das iPhone zeigt das Kamerabild.\n\nDanach den Pairing-Code aus der Benachrichtigung in der Home-App eingeben."
+            "description": "Es wird ein eigenes HomeKit-Zubehör (Modus „Zubehör“) für die Kamera {camera_entity_id} angelegt. Die HomeKit Bridge verknüpft die Klingel dieses Geräts automatisch: Apple-Geräte wie HomePod und iPhone melden das Klingeln, das iPhone zeigt das Kamerabild.\n\nDanach den Pairing-Code aus der Benachrichtigung in der Home-App eingeben."
           }
         },
         "abort": {
@@ -169,9 +146,9 @@
         }
       }
     },
-    "eingang_nicht_entkoppelt": {
-      "title": "Shelly-Eingang von {name} ist nicht entkoppelt",
-      "description": "Der Shelly {host} steht auf Eingangsmodus „{btn_type}“. Dann schaltet der Klingeltaster das Relais direkt und der Schalter „Mechanischer Gong“ kann den Gong nicht stumm schalten.\n\nAm Shelly unter *Settings → Button Type* „Detached Switch“ wählen. Der Hinweis verschwindet beim nächsten Neuladen der Klingel."
+    "gong_waehlen": {
+      "title": "Gong-Schalter für {name} wählen",
+      "description": "Nach dem Update auf Version 0.2.0 konnte für die Klingel {name} kein Gong-Schalter automatisch zugeordnet werden. Bitte in den Optionen der Klingel unter „Gong-Schalter“ eine switch-Entität wählen, z. B. das Relais aus der Shelly-, ESPHome- oder Zigbee-Integration, oder das Feld leer lassen, wenn kein Gong angesteuert werden soll.\n\nDer Hinweis verschwindet beim Speichern der Optionen. Danach – oder wenn kein Gong gewünscht ist – kann er auch einfach ignoriert bzw. geschlossen werden."
     }
   }
 }

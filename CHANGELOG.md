@@ -3,6 +3,70 @@
 Alle Änderungen an dieser Integration. Jede Änderung erhöht die Version in
 `custom_components/homekit_tuerklingel/manifest.json`; jede Version bekommt hier einen Abschnitt.
 
+## [0.2.0] – 2026-11-13
+
+Die Integration ist jetzt **universell**: beliebiger Klingel-Auslöser, beliebiger Gong-Schalter,
+beliebige Kamera. Sie spricht selbst mit keiner Klingel-Hardware mehr.
+
+### Geändert
+
+- Einrichtung: Name, Kamera, Auslöser (Webhook und/oder Entitäten), optionaler Gong-Schalter –
+  ohne Shelly-Adresse, Zugangsdaten und Verbindungstest.
+- Webhook (GET/POST, nur LAN) ist jetzt ein Auslöser unter mehreren, für jedes Gerät, das eine URL
+  aufrufen kann (Shelly Gen1/Gen2+, ESPHome, Tasmota, Skripte). Der Quellfilter nimmt mehrere
+  erlaubte Quellen an (IP-Adressen oder Hostnamen; Hostnamen werden beim Laden aufgelöst).
+- Gong: statt des Shelly-Relais per HTTP eine beliebige `switch`-Entität, die für die Gong-Dauer
+  ein- und danach wieder ausgeschaltet wird. „Mechanischer Gong“ und „Gong-Dauer“ gibt es nur noch,
+  wenn ein Gong-Schalter gewählt ist.
+- Debug-Protokoll und Diagnose nennen die Quelle des Auslösers (Webhook mit Methode und IP bzw.
+  Entität) und zählen Entitäts-Auslöser.
+- README neu auf Englisch (`README.md`), deutsche Fassung in `README.de.md`.
+
+### Hinzugefügt
+
+- Auslöser über vorhandene Home-Assistant-Entitäten: `binary_sensor`/`input_boolean` (Wechsel auf
+  „an“), `event`/`button`/`input_button` (jedes Ereignis). Kein Klingeln, wenn eine Entität nur aus
+  *nicht verfügbar*/*unbekannt* zurückkommt. Webhook und Entitäten sind kombinierbar; die Entprellung
+  verhindert Doppel-Klingeln.
+- Reparatur-Hinweis „Gong-Schalter wählen“ (nur nach Update von 0.1.x ohne übernehmbaren Schalter).
+- Beispiele für Auslöser im README: Shelly Gen1 und Gen2+, ESPHome, Tasmota, Entität aus der
+  Shelly-Integration.
+
+### Entfernt
+
+- Direkte Shelly-Gen1-HTTP-Anbindung: Zugangsdaten, Verbindungstest, erneute Anmeldung (Reauth),
+  Binärsensor „Shelly erreichbar“, Reparatur-Hinweis „Eingang nicht entkoppelt“.
+
+### Update-Hinweise
+
+- Bestehende Klingeln aus 0.1.x werden beim Start automatisch umgestellt:
+  - Die Webhook-URL bleibt gleich; am Shelly muss nichts geändert werden.
+  - Der Quellfilter behält seine Einstellung und erlaubt weiter die Shelly-IP (bzw. die abweichende
+    erlaubte IP).
+  - Ist der Shelly zusätzlich in der Shelly-Integration eingebunden, wird dessen Schalter als
+    Gong-Schalter übernommen. Sonst erscheint „Gong-Schalter wählen“ – bis dahin läutet der Gong nicht.
+  - „Shelly erreichbar“ und die gespeicherten Shelly-Zugangsdaten werden entfernt.
+- Das Stummschalten des Gongs wirkt weiterhin nur, wenn der Taster das Relais nicht selbst schaltet
+  (Shelly: „Detached“).
+
+### Getestet
+
+<!-- KOORDINATOR: Anzahl Tests/Abdeckung und die Ergebnisse des Live-Tests mit 0.2.0 eintragen. -->
+
+- Automatische Tests (pytest-homeassistant-custom-component, Python 3.14): Einrichtung und Optionen,
+  Webhook mit Quellfilter (IP und Hostname), Entitäts-Auslöser, Entprellung, Gong per `switch`,
+  Migration aus 0.1.x, Entitäten, Proxy-Kamera, Reparatur-Hinweise, Push-Inhalt, Diagnose.
+- Im echten Home Assistant mit 0.1.1 geprüft und in 0.2.0 weiter vorhanden (erneuter Live-Test mit
+  0.2.0 steht aus): Installation über HACS, Webhook GET/POST mit 1–2 ms bis zum Event, IP-Filter 403,
+  Entprellung, Entitäten, Proxy-Kamera mit echter Reolink.
+
+### Noch nicht getestet
+
+- Im echten Home Assistant: Entitäts-Auslöser, Gong per `switch`, Migration einer echten
+  0.1.x-Installation, Beispiele für Auslöser mit echten Geräten (Shelly Gen1/Gen2+, ESPHome, Tasmota).
+- Nie im echten Home Assistant getestet: HomeKit-Pairing, Klingelton auf HomePods, Push-Benachrichtigung,
+  Gong-Impuls an einem echten Relais, Reparatur-Hinweis „HomeKit-Türklingel anlegen“.
+
 ## [0.1.1] – 2026-11-13
 
 ### Behoben

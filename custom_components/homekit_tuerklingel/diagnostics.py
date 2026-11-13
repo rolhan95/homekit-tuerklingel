@@ -1,4 +1,4 @@
-"""Diagnosedaten einer Klingel (Zugangsdaten, Webhook-ID und MAC geschwärzt)."""
+"""Diagnosedaten einer Klingel (Webhook-ID und erlaubte Quellen geschwärzt)."""
 
 from __future__ import annotations
 
@@ -7,24 +7,19 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.diagnostics import REDACTED, async_redact_data
 from homeassistant.core import HomeAssistant
 
-from .const import (
-    CONF_SHELLY_MAC,
-    CONF_SHELLY_PASSWORD,
-    CONF_SHELLY_USERNAME,
-    CONF_WEBHOOK_ID,
-)
+from .const import CONF_ALLOWED_SOURCES, CONF_WEBHOOK_ID
 from .homekit import async_get_proxy_camera_entity_id, async_homekit_accessory_entries
 from .util import async_get_webhook_url
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
+# Erlaubte Quellen sind zwar lokale Adressen, verraten aber den Netzaufbau.
+# "remote" (Quell-IP des letzten Webhook-Aufrufs) aus demselben Grund.
 TO_REDACT = {
-    CONF_SHELLY_PASSWORD,
-    CONF_SHELLY_USERNAME,
     CONF_WEBHOOK_ID,
-    CONF_SHELLY_MAC,
-    "mac",
+    CONF_ALLOWED_SOURCES,
+    "remote",
     "unique_id",
 }
 
@@ -74,7 +69,12 @@ async def async_get_config_entry_diagnostics(
 
     diag["hub"] = {
         "camera_entity_id": hub.camera_entity_id,
-        "shelly_available": hub.shelly_available,
+        "webhook_enabled": hub.webhook_enabled,
+        "restrict_ip": hub.restrict_ip,
+        "allowed_sources": REDACTED if hub.allowed_sources else [],
+        "allowed_sources_count": len(hub.allowed_sources),
+        "trigger_entities": hub.trigger_entities,
+        "gong_entity_id": hub.gong_entity_id,
         "gong_enabled": hub.gong_enabled,
         "cooldown": hub.cooldown,
         "gong_duration": hub.gong_duration,
@@ -85,7 +85,7 @@ async def async_get_config_entry_diagnostics(
             "time": _iso(hub.snapshot_time),
         },
         "image_entity_id": hub.image_entity_id,
-        "restrict_ip": hub.restrict_ip,
+        "event_entity_id": hub.event_entity_id,
         "stats": async_redact_data(dict(hub.stats), TO_REDACT),
     }
     return diag

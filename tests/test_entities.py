@@ -6,7 +6,6 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
-from aiohttp import ClientError
 from homeassistant.components import camera
 from homeassistant.components.camera import CameraEntityFeature, Image
 from homeassistant.const import (
@@ -16,7 +15,7 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import HomeAssistant, State
+from homeassistant.core import HomeAssistant, ServiceCall, State
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -24,19 +23,16 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
+    async_mock_service,
     mock_restore_cache_with_extra_data,
-)
-from pytest_homeassistant_custom_component.test_util.aiohttp import (
-    AiohttpClientMocker,
 )
 
 from custom_components.homekit_tuerklingel.const import (
-    CONF_CONNECTIVITY,
-    CONF_RESTRICT_IP,
+    CONF_ALLOWED_SOURCES,
+    CONF_GONG_ENTITY,
     DOMAIN,
     EVENT_TYPE_RING,
     KEY_CAMERA,
-    KEY_CONNECTIVITY,
     KEY_COOLDOWN,
     KEY_EVENT,
     KEY_GONG,
@@ -46,16 +42,14 @@ from custom_components.homekit_tuerklingel.const import (
     KEY_SNAPSHOT,
 )
 
-from .conftest import CAMERA, SHELLY_HOST, SHELLY_MAC, WEBHOOK_ID
+from .conftest import CAMERA, GONG, TRIGGER, WEBHOOK_ID
 
-BASE = f"http://{SHELLY_HOST}"
 JPEG = b"\xff\xd8\xff\xe0fake-jpeg"
 STREAM_URL = "rtsp://192.168.1.60:554/h264Preview_01_sub"
 
 ALL_KEYS = (
     ("event", KEY_EVENT),
     ("binary_sensor", KEY_RINGING),
-    ("binary_sensor", KEY_CONNECTIVITY),
     ("switch", KEY_GONG),
     ("number", KEY_COOLDOWN),
     ("number", KEY_GONG_DURATION),
@@ -95,18 +89,6 @@ def source_camera(hass: HomeAssistant):
         yield calls
 
 
-def _mock_shelly(aioclient_mock: AiohttpClientMocker) -> None:
-    aioclient_mock.get(f"{BASE}/shelly", json={"mac": SHELLY_MAC, "type": "SHSW-1"})
-    aioclient_mock.get(
-        f"{BASE}/settings", json={"relays": [{"btn_type": "detached"}]}
-    )
-    aioclient_mock.get(f"{BASE}/relay/0", json={"ison": True})
-
-
-def _relay_calls(aioclient_mock: AiohttpClientMocker) -> int:
-    return sum(1 for call in aioclient_mock.mock_calls if call[1].path == "/relay/0")
-
-
 async def _tick(hass: HomeAssistant, freezer, seconds: float) -> None:
     freezer.tick(timedelta(seconds=seconds))
     async_fire_time_changed(hass)
@@ -139,29 +121,37 @@ def _preregister(
     ).entity_id
 
 
-def _with_options(entry: MockConfigEntry, options: dict) -> MockConfigEntry:
-    """Kopie des Entry mit anderen Optionen."""
+def _with_options(entry: MockConfigEntry, **changes) -> MockConfigEntry:
+    """Kopie des Entry mit geänderten Optionen (None-Werte werden entfernt)."""
+    options = {**entry.options, **changes}
     return MockConfigEntry(
         domain=DOMAIN,
         title=entry.title,
         unique_id=entry.unique_id,
         data=dict(entry.data),
-        options=options,
+        options={k: v for k, v in options.items() if v is not None},
         version=entry.version,
     )
 
 
+def _gong_services(hass: HomeAssistant) -> tuple[list[ServiceCall], list[ServiceCall]]:
+    """switch.turn_on/turn_off ersetzen (nach dem Setup aufrufen)."""
+    return (
+        async_mock_service(hass, "switch", "turn_on"),
+        async_mock_service(hass, "switch", "turn_off"),
+    )
+
+
 @pytest.fixture
-def open_entry(mock_entry: MockConfigEntry) -> MockConfigEntry:
-    """Entry ohne IP-Filter (Testclient kommt von 127.0.0.1)."""
-    return _with_options(mock_entry, {CONF_RESTRICT_IP: False})
+def local_entry(mock_entry: MockConfigEntry) -> MockConfigEntry:
+    """Entry mit IP-Filter auf 127.0.0.1 (Quelle des Testclients)."""
+    return _with_options(mock_entry, **{CONF_ALLOWED_SOURCES: ["127.0.0.1"]})
 
 
 async def test_entities_on_one_device(
-    hass: HomeAssistant, mock_entry, aioclient_mock, source_camera
+    hass: HomeAssistant, mock_entry, source_camera
 ) -> None:
     """Alle Entitäten existieren und hängen am selben Gerät (wichtig für HomeKit)."""
-    _mock_shelly(aioclient_mock)
     await _setup(hass, mock_entry)
 
     ent_reg = er.async_get(hass)
@@ -175,7 +165,16 @@ async def test_entities_on_one_device(
     device = dr.async_get(hass).async_get(device_ids.pop())
     assert (DOMAIN, mock_entry.entry_id) in device.identifiers
 
-    event = hass.states.get(_eid(hass, mock_entry, "event", KEY_EVENT))
+    # Kein Erreichbarkeits-Sensor mehr: nur „Klingelt“ als binary_sensor
+    binary_sensors = [
+        e
+        for e in er.async_entries_for_config_entry(ent_reg, mock_entry.entry_id)
+        if e.domain == "binary_sensor"
+    ]
+    assert [e.unique_id for e in binary_sensors] == [f"{mock_entry.entry_id}_{KEY_RINGING}"]
+
+    event_id = _eid(hass, mock_entry, "event", KEY_EVENT)
+    event = hass.states.get(event_id)
     assert event.attributes["device_class"] == "doorbell"
     assert event.attributes["event_types"] == [EVENT_TYPE_RING]
     assert event.state == STATE_UNKNOWN
@@ -195,41 +194,43 @@ async def test_entities_on_one_device(
     )
     hub = mock_entry.runtime_data
     assert hub.image_entity_id == _eid(hass, mock_entry, "image", KEY_SNAPSHOT)
+    assert hub.event_entity_id == event_id
 
-    # Entladen setzt die Bild-Entität im Hub zurück
+    # Entladen setzt Bild- und Event-Entität im Hub zurück
     assert await hass.config_entries.async_unload(mock_entry.entry_id)
     await hass.async_block_till_done()
     assert hub.image_entity_id is None
+    assert hub.event_entity_id is None
 
 
 async def test_ring_via_webhook(
     hass: HomeAssistant,
-    open_entry,
-    aioclient_mock,
+    local_entry,
     source_camera,
     hass_client_no_auth,
 ) -> None:
     """Webhook → Event, Binärsensor, Zeitstempel, Snapshot und Gong."""
-    _mock_shelly(aioclient_mock)
-    await _setup(hass, open_entry)
-    hub = open_entry.runtime_data
+    await _setup(hass, local_entry)
+    hub = local_entry.runtime_data
+    on_calls, _off_calls = _gong_services(hass)
     client = await hass_client_no_auth()
 
     resp = await client.get(f"/api/webhook/{WEBHOOK_ID}")
     assert resp.status == 200
+    assert await resp.text() == "ok"
     await hass.async_block_till_done()
 
-    event = hass.states.get(_eid(hass, open_entry, "event", KEY_EVENT))
+    event = hass.states.get(_eid(hass, local_entry, "event", KEY_EVENT))
     assert event.attributes["event_type"] == EVENT_TYPE_RING
     assert event.state != STATE_UNKNOWN
 
-    ringing_id = _eid(hass, open_entry, "binary_sensor", KEY_RINGING)
+    ringing_id = _eid(hass, local_entry, "binary_sensor", KEY_RINGING)
     assert hass.states.get(ringing_id).state == STATE_ON
 
-    sensor = hass.states.get(_eid(hass, open_entry, "sensor", KEY_LAST_RING))
+    sensor = hass.states.get(_eid(hass, local_entry, "sensor", KEY_LAST_RING))
     assert dt_util.parse_datetime(sensor.state) == hub.last_ring.replace(microsecond=0)
 
-    image_id = _eid(hass, open_entry, "image", KEY_SNAPSHOT)
+    image_id = _eid(hass, local_entry, "image", KEY_SNAPSHOT)
     image_state = hass.states.get(image_id)
     assert image_state.state == hub.snapshot_time.isoformat()
     resp = await client.get(
@@ -239,7 +240,7 @@ async def test_ring_via_webhook(
     assert await resp.read() == JPEG
     assert resp.content_type == "image/jpeg"
 
-    assert _relay_calls(aioclient_mock) == 1
+    assert [c.data[ATTR_ENTITY_ID] for c in on_calls] == [GONG]
 
     # Nach auto_off (Standard 5 s) wieder aus
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=6))
@@ -250,22 +251,64 @@ async def test_ring_via_webhook(
     resp = await client.get(f"/api/webhook/{WEBHOOK_ID}")
     assert resp.status == 200
     assert await resp.text() == "debounced"
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+async def test_webhook_rejected_from_other_source(
+    hass: HomeAssistant, mock_entry, source_camera, hass_client_no_auth
+) -> None:
+    """Webhook nur von 192.168.1.50 erlaubt → Testclient (127.0.0.1) abgelehnt."""
+    await _setup(hass, mock_entry)
+    client = await hass_client_no_auth()
+    resp = await client.get(f"/api/webhook/{WEBHOOK_ID}")
+    assert resp.status == 403
+    await hass.async_block_till_done()
+    ringing_id = _eid(hass, mock_entry, "binary_sensor", KEY_RINGING)
+    assert hass.states.get(ringing_id).state == STATE_OFF
+    assert mock_entry.runtime_data.last_ring is None
+
+
+async def test_ring_via_trigger_entity(
+    hass: HomeAssistant, mock_entry, source_camera
+) -> None:
+    """Auslöser-Entität off → on klingelt: Event, Binärsensor, Zeitstempel."""
+    hass.states.async_set(TRIGGER, STATE_OFF)
+    await _setup(hass, mock_entry)
+    hub = mock_entry.runtime_data
+    on_calls, _off_calls = _gong_services(hass)
+    event_id = _eid(hass, mock_entry, "event", KEY_EVENT)
+    ringing_id = _eid(hass, mock_entry, "binary_sensor", KEY_RINGING)
+
+    hass.states.async_set(TRIGGER, STATE_ON)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(event_id).attributes["event_type"] == EVENT_TYPE_RING
+    assert hass.states.get(ringing_id).state == STATE_ON
+    assert hub.last_ring is not None
+    assert hub.stats["entity_triggers"] == 1
+    assert len(on_calls) == 1
+
+    # Zurück auf off klingelt nicht
+    hass.states.async_set(TRIGGER, STATE_OFF)
+    await hass.async_block_till_done()
+    assert hub.stats["entity_triggers"] == 1
+    await hass.async_block_till_done(wait_background_tasks=True)
 
 
 async def test_ringing_timer_restarts(
-    hass: HomeAssistant, open_entry, aioclient_mock, source_camera, freezer
+    hass: HomeAssistant, mock_entry, source_camera, freezer
 ) -> None:
     """Erneutes Klingeln startet den Ausschalt-Timer neu."""
-    _mock_shelly(aioclient_mock)
-    await _setup(hass, open_entry)
-    hub = open_entry.runtime_data
-    ringing_id = _eid(hass, open_entry, "binary_sensor", KEY_RINGING)
+    await _setup(hass, mock_entry)
+    hub = mock_entry.runtime_data
+    _gong_services(hass)
+    ringing_id = _eid(hass, mock_entry, "binary_sensor", KEY_RINGING)
 
     # Entprellung aus, damit zwei Klingeln direkt nacheinander zählen
     await hass.services.async_call(
         "number",
         "set_value",
-        {ATTR_ENTITY_ID: _eid(hass, open_entry, "number", KEY_COOLDOWN), "value": 0},
+        {ATTR_ENTITY_ID: _eid(hass, mock_entry, "number", KEY_COOLDOWN), "value": 0},
         blocking=True,
     )
     assert hub.cooldown == 0.0
@@ -287,19 +330,41 @@ async def test_ringing_timer_restarts(
     # Entladen mit laufendem Timer bricht ihn ab
     assert hub.async_ring()
     await hass.async_block_till_done()
-    assert await hass.config_entries.async_unload(open_entry.entry_id)
+    assert await hass.config_entries.async_unload(mock_entry.entry_id)
     await hass.async_block_till_done()
 
 
-async def test_gong_switch(
-    hass: HomeAssistant, mock_entry, aioclient_mock, source_camera
-) -> None:
-    """Schalter aus → Hub stumm, kein Relais-Aufruf; wieder an → Relais."""
-    _mock_shelly(aioclient_mock)
+async def test_gong_pulse(hass: HomeAssistant, mock_entry, source_camera) -> None:
+    """Klingeln schaltet den Gong-Schalter ein und nach der Gong-Dauer wieder aus."""
+    await _setup(hass, mock_entry)
+    hub = mock_entry.runtime_data
+    await hass.services.async_call(
+        "number",
+        "set_value",
+        {ATTR_ENTITY_ID: _eid(hass, mock_entry, "number", KEY_GONG_DURATION), "value": 0.2},
+        blocking=True,
+    )
+    assert hub.gong_duration == 0.2
+    on_calls, off_calls = _gong_services(hass)
+
+    assert hub.async_ring()
+    await hass.async_block_till_done()
+    assert [c.data[ATTR_ENTITY_ID] for c in on_calls] == [GONG]
+    assert off_calls == []  # Impuls läuft noch
+
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert [c.data[ATTR_ENTITY_ID] for c in off_calls] == [GONG]
+    assert hub.stats["gong_pulses"] == 1
+
+
+async def test_gong_switch(hass: HomeAssistant, mock_entry, source_camera) -> None:
+    """Schalter aus → Gong stumm (keine Aufrufe); wieder an → Gong-Schalter gepulst."""
     await _setup(hass, mock_entry)
     hub = mock_entry.runtime_data
     switch_id = _eid(hass, mock_entry, "switch", KEY_GONG)
+    entity = hass.data["switch"].get_entity(switch_id)
 
+    # Über den Dienst stumm schalten (vor dem Ersetzen von switch.turn_off)
     await hass.services.async_call(
         "switch", "turn_off", {ATTR_ENTITY_ID: switch_id}, blocking=True
     )
@@ -308,29 +373,71 @@ async def test_gong_switch(
     assert state.attributes["icon"] == "mdi:bell-off"
     assert hub.gong_enabled is False
 
+    on_calls, off_calls = _gong_services(hass)
     hub.async_ring()
-    await hass.async_block_till_done()
-    assert _relay_calls(aioclient_mock) == 0
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert on_calls == []
+    assert off_calls == []
 
-    await hass.services.async_call(
-        "switch", "turn_on", {ATTR_ENTITY_ID: switch_id}, blocking=True
-    )
+    # switch.turn_on ist jetzt ersetzt → direkt an der Entität einschalten
+    await entity.async_turn_on()
     state = hass.states.get(switch_id)
     assert state.state == STATE_ON
     assert state.attributes["icon"] == "mdi:bell"
     assert hub.gong_enabled is True
 
     hub.cooldown = 0
+    hub.gong_duration = 0
     hub.async_ring()
-    await hass.async_block_till_done()
-    assert _relay_calls(aioclient_mock) == 1
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert [c.data[ATTR_ENTITY_ID] for c in on_calls] == [GONG]
+    assert [c.data[ATTR_ENTITY_ID] for c in off_calls] == [GONG]
+
+    await entity.async_turn_off()
+    assert hub.gong_enabled is False
 
 
-async def test_numbers_set_hub(
-    hass: HomeAssistant, mock_entry, aioclient_mock, source_camera
+async def test_without_gong(hass: HomeAssistant, mock_entry, source_camera) -> None:
+    """Ohne Gong-Schalter: keine Gong-Entitäten, verwaiste Einträge entfernt, kein Aufruf."""
+    entry = _with_options(mock_entry, **{CONF_GONG_ENTITY: None})
+    old_switch = _preregister(hass, entry, "switch", KEY_GONG, "alt_gong")
+    old_number = _preregister(hass, entry, "number", KEY_GONG_DURATION, "alt_dauer")
+    ent_reg = er.async_get(hass)
+    assert ent_reg.async_get(old_switch) is not None
+    assert ent_reg.async_get(old_number) is not None
+
+    await _setup(hass, entry)
+    hub = entry.runtime_data
+    assert hub.gong_entity_id is None
+    assert _eid(hass, entry, "switch", KEY_GONG) is None
+    assert _eid(hass, entry, "number", KEY_GONG_DURATION) is None
+    assert ent_reg.async_get(old_switch) is None
+    assert ent_reg.async_get(old_number) is None
+    assert hass.states.get(old_switch) is None
+    # Entprellzeit gibt es immer
+    assert _eid(hass, entry, "number", KEY_COOLDOWN) is not None
+
+    on_calls, off_calls = _gong_services(hass)
+    assert hub.async_ring()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert on_calls == []
+    assert off_calls == []
+    assert hass.states.get(_eid(hass, entry, "binary_sensor", KEY_RINGING)).state == STATE_ON
+
+
+async def test_without_gong_nothing_to_remove(
+    hass: HomeAssistant, mock_entry, source_camera
 ) -> None:
-    """Zahlenwerte landen im Hub; Gong-Dauer geht als timer an den Shelly."""
-    _mock_shelly(aioclient_mock)
+    """Ohne Gong und ohne alte Einträge: Setup läuft normal."""
+    entry = _with_options(mock_entry, **{CONF_GONG_ENTITY: None})
+    await _setup(hass, entry)
+    assert _eid(hass, entry, "switch", KEY_GONG) is None
+    assert _eid(hass, entry, "number", KEY_GONG_DURATION) is None
+    assert _eid(hass, entry, "number", KEY_COOLDOWN) is not None
+
+
+async def test_numbers_set_hub(hass: HomeAssistant, mock_entry, source_camera) -> None:
+    """Zahlenwerte landen im Hub."""
     await _setup(hass, mock_entry)
     hub = mock_entry.runtime_data
 
@@ -362,9 +469,8 @@ async def test_numbers_set_hub(
     assert float(hass.states.get(duration_id).state) == 2.3
 
 
-async def test_restore(hass: HomeAssistant, mock_entry, aioclient_mock, source_camera) -> None:
+async def test_restore(hass: HomeAssistant, mock_entry, source_camera) -> None:
     """Schalter, Zahlen und Zeitstempel werden nach einem Neustart wiederhergestellt."""
-    _mock_shelly(aioclient_mock)
     switch_id = _preregister(hass, mock_entry, "switch", KEY_GONG, "tuer_gong")
     cooldown_id = _preregister(hass, mock_entry, "number", KEY_COOLDOWN, "tuer_entprell")
     duration_id = _preregister(hass, mock_entry, "number", KEY_GONG_DURATION, "tuer_dauer")
@@ -411,55 +517,8 @@ async def test_restore(hass: HomeAssistant, mock_entry, aioclient_mock, source_c
     assert dt_util.parse_datetime(hass.states.get(sensor_id).state) == last
 
 
-async def test_connectivity(
-    hass: HomeAssistant, mock_entry, aioclient_mock, source_camera
-) -> None:
-    """Erreichbarkeit folgt dem Ping des Hubs."""
-    _mock_shelly(aioclient_mock)
-    await _setup(hass, mock_entry)
-    hub = mock_entry.runtime_data
-    conn_id = _eid(hass, mock_entry, "binary_sensor", KEY_CONNECTIVITY)
-    assert er.async_get(hass).async_get(conn_id).entity_category == "diagnostic"
-    state = hass.states.get(conn_id)
-    assert state.attributes["device_class"] == "connectivity"
-    assert state.state == STATE_ON
-
-    aioclient_mock.clear_requests()
-    aioclient_mock.get(f"{BASE}/shelly", exc=ClientError())
-    await hub.async_update_availability()
-    await hass.async_block_till_done()
-    assert hass.states.get(conn_id).state == STATE_OFF
-
-
-async def test_connectivity_unknown(
-    hass: HomeAssistant, mock_entry, aioclient_mock, source_camera
-) -> None:
-    """Noch nicht geprüft → unbekannt."""
-    _mock_shelly(aioclient_mock)
-    with patch(
-        "custom_components.homekit_tuerklingel.hub.TuerklingelHub.async_update_availability"
-    ):
-        await _setup(hass, mock_entry)
-    conn_id = _eid(hass, mock_entry, "binary_sensor", KEY_CONNECTIVITY)
-    assert hass.states.get(conn_id).state == STATE_UNKNOWN
-
-
-async def test_connectivity_disabled(
-    hass: HomeAssistant, mock_entry, aioclient_mock, source_camera
-) -> None:
-    """Ohne Erreichbarkeitsprüfung gibt es keinen Erreichbarkeits-Sensor."""
-    _mock_shelly(aioclient_mock)
-    entry = _with_options(mock_entry, {CONF_CONNECTIVITY: False})
-    await _setup(hass, entry)
-    assert _eid(hass, entry, "binary_sensor", KEY_CONNECTIVITY) is None
-    assert _eid(hass, entry, "binary_sensor", KEY_RINGING) is not None
-
-
-async def test_proxy_camera(
-    hass: HomeAssistant, mock_entry, aioclient_mock, source_camera
-) -> None:
+async def test_proxy_camera(hass: HomeAssistant, mock_entry, source_camera) -> None:
     """Bild und Stream der Quellkamera werden durchgereicht (so wie HomeKit sie holt)."""
-    _mock_shelly(aioclient_mock)
     await _setup(hass, mock_entry)
     cam_id = _eid(hass, mock_entry, "camera", KEY_CAMERA)
 
@@ -504,10 +563,9 @@ async def test_proxy_camera(
 
 
 async def test_proxy_camera_source_attributes(
-    hass: HomeAssistant, mock_entry, aioclient_mock, source_camera
+    hass: HomeAssistant, mock_entry, source_camera
 ) -> None:
     """Marke, Modell und Streaming kommen von der Quellkamera, wenn sie geladen ist."""
-    _mock_shelly(aioclient_mock)
     await _setup(hass, mock_entry)
     cam_id = _eid(hass, mock_entry, "camera", KEY_CAMERA)
     entity = hass.data["camera"].get_entity(cam_id)

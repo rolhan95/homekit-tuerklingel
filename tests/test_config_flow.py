@@ -4,49 +4,43 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import aiohttp
 import pytest
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core_config import async_process_ha_core_config
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
+from custom_components.homekit_tuerklingel.config_flow import WEBHOOK_OFF_HINT
 from custom_components.homekit_tuerklingel.const import (
-    CONF_ALLOWED_IP,
+    CONF_ALLOWED_SOURCES,
     CONF_AUTO_OFF,
     CONF_CAMERA_ENTITY,
-    CONF_CONNECTIVITY,
+    CONF_GONG_ENTITY,
     CONF_NOTIFY_ENABLED,
     CONF_NOTIFY_MESSAGE,
     CONF_NOTIFY_SERVICES,
     CONF_NOTIFY_TITLE,
     CONF_RESTRICT_IP,
-    CONF_SHELLY_HOST,
-    CONF_SHELLY_MAC,
-    CONF_SHELLY_PASSWORD,
-    CONF_SHELLY_USERNAME,
+    CONF_TRIGGER_ENTITIES,
+    CONF_WEBHOOK_ENABLED,
     CONF_WEBHOOK_ID,
+    CONFIG_VERSION,
     DEFAULT_AUTO_OFF,
+    DEFAULT_NOTIFY_ENABLED,
     DEFAULT_NOTIFY_MESSAGE,
     DEFAULT_NOTIFY_TITLE,
     DOMAIN,
+    ISSUE_GONG_SELECT,
 )
 
-from .conftest import CAMERA, SHELLY_HOST, SHELLY_MAC, WEBHOOK_ID
+from .conftest import CAMERA, GONG, SHELLY_HOST, TRIGGER, WEBHOOK_ID
 
-BASE = f"http://{SHELLY_HOST}"
 INTERNAL_URL = "http://192.168.1.10:8123"
-SHELLY_JSON = {"type": "SHSW-1", "mac": SHELLY_MAC.lower(), "auth": False, "fw": "20230913"}
-SETTINGS_DETACHED = {"relays": [{"btn_type": "detached"}]}
-
-USER_INPUT = {
-    CONF_NAME: "Haustür",
-    CONF_SHELLY_HOST: f" http://{SHELLY_HOST}/ ",
-    CONF_SHELLY_USERNAME: "admin",
-    CONF_SHELLY_PASSWORD: "geheim",
-}
+CAMERA_2 = "camera.garten"
 
 
 @pytest.fixture(autouse=True)
@@ -59,399 +53,402 @@ def mock_setup_entry():
 
 
 @pytest.fixture(autouse=True)
-def internal_url(hass: HomeAssistant) -> None:
-    """Feste interne URL für die Webhook-Adresse."""
-    hass.config.internal_url = INTERNAL_URL
+async def internal_url(hass: HomeAssistant) -> None:
+    """Feste interne URL, damit die Webhook-URL vorhersagbar ist."""
+    await async_process_ha_core_config(hass, {"internal_url": INTERNAL_URL})
 
 
-def mock_shelly(
-    aioclient_mock: AiohttpClientMocker,
-    *,
-    shelly: dict | None = None,
-    settings: dict | None = None,
-    settings_status: int = 200,
-    host: str = SHELLY_HOST,
-) -> None:
-    """Antworten des Shelly hinterlegen."""
-    aioclient_mock.get(f"http://{host}/shelly", json=shelly or SHELLY_JSON)
-    aioclient_mock.get(
-        f"http://{host}/settings",
-        json=settings if settings is not None else SETTINGS_DETACHED,
-        status=settings_status,
+async def _start(hass: HomeAssistant) -> dict:
+    return await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
     )
 
 
-async def _start_user(hass: HomeAssistant, user_input: dict | None = None):
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+def _user_input(**overrides) -> dict:
+    data = {
+        CONF_NAME: " Haustür ",
+        CONF_CAMERA_ENTITY: CAMERA,
+        CONF_WEBHOOK_ENABLED: True,
+        CONF_TRIGGER_ENTITIES: [TRIGGER],
+        CONF_GONG_ENTITY: GONG,
+    }
+    data.update(overrides)
+    return {key: value for key, value in data.items() if value is not None}
+
+
+def _selector_config(result: dict, key: str) -> dict:
+    for marker, value in result["data_schema"].schema.items():
+        if marker == key:
+            return value.config
+    raise AssertionError(key)
+
+
+def _suggested(result: dict, key: str):
+    for marker in result["data_schema"].schema:
+        if marker == key:
+            return (marker.description or {}).get("suggested_value")
+    raise AssertionError(key)
+
+
+# ---------------------------------------------------------------- Config-Flow
+
+
+async def test_flow_mit_webhook_und_quellen(hass: HomeAssistant) -> None:
+    """Webhook mit Beschränkung: Quellen werden zerlegt, Entry vollständig angelegt."""
+    result = await _start(hass)
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
-    return await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input or USER_INPUT
-    )
-
-
-async def test_user_flow_success(hass: HomeAssistant, aioclient_mock) -> None:
-    """Kompletter Flow: Verbindungstest, Kamera, Entry mit Webhook-URL."""
-    mock_shelly(aioclient_mock)
-    result = await _start_user(hass)
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "camera"
-    assert result["description_placeholders"] == {"detached_hint": ""}
-
-    # Basic-Auth wurde an /settings gesendet, an /shelly nicht.
-    settings_call = next(c for c in aioclient_mock.mock_calls if str(c[1]).endswith("/settings"))
-    assert settings_call[3]["Authorization"].startswith("Basic ")
 
     with patch(
         "custom_components.homekit_tuerklingel.config_flow.async_generate_id",
         return_value=WEBHOOK_ID,
     ):
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_CAMERA_ENTITY: CAMERA}
+            result["flow_id"], _user_input()
         )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "webhook"
+    url = f"{INTERNAL_URL}/api/webhook/{WEBHOOK_ID}"
+    assert result["description_placeholders"] == {"webhook_url": url}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_RESTRICT_IP: True,
+            CONF_ALLOWED_SOURCES: f" {SHELLY_HOST}, [fe80::1]; klingel.local ",
+        },
+    )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Haustür"
-    assert result["data"] == {
-        CONF_SHELLY_HOST: SHELLY_HOST,
-        CONF_SHELLY_USERNAME: "admin",
-        CONF_SHELLY_PASSWORD: "geheim",
-        CONF_SHELLY_MAC: SHELLY_MAC,
-        CONF_CAMERA_ENTITY: CAMERA,
-        CONF_WEBHOOK_ID: WEBHOOK_ID,
-    }
-    assert CONF_NAME not in result["data"]
+    assert result["data"] == {CONF_WEBHOOK_ID: WEBHOOK_ID, CONF_CAMERA_ENTITY: CAMERA}
     assert result["options"] == {
+        CONF_WEBHOOK_ENABLED: True,
         CONF_RESTRICT_IP: True,
-        CONF_ALLOWED_IP: "",
+        CONF_ALLOWED_SOURCES: [SHELLY_HOST, "fe80::1", "klingel.local"],
+        CONF_TRIGGER_ENTITIES: [TRIGGER],
+        CONF_GONG_ENTITY: GONG,
         CONF_AUTO_OFF: DEFAULT_AUTO_OFF,
-        CONF_CONNECTIVITY: True,
-        CONF_NOTIFY_ENABLED: False,
+        CONF_NOTIFY_ENABLED: DEFAULT_NOTIFY_ENABLED,
         CONF_NOTIFY_SERVICES: [],
         CONF_NOTIFY_TITLE: DEFAULT_NOTIFY_TITLE,
         CONF_NOTIFY_MESSAGE: DEFAULT_NOTIFY_MESSAGE,
     }
-    assert result["description_placeholders"] == {
-        "webhook_url": f"{INTERNAL_URL}/api/webhook/{WEBHOOK_ID}"
-    }
-    assert result["result"].unique_id == SHELLY_MAC
+    assert result["description_placeholders"] == {"webhook_hint": f"`{url}`"}
+    entry = result["result"]
+    assert entry.version == CONFIG_VERSION
+    assert entry.minor_version == 1
 
 
-async def test_user_flow_without_auth(hass: HomeAssistant, aioclient_mock) -> None:
-    """Ohne Zugangsdaten: kein Authorization-Header, Werte None, Hinweis zum Eingang."""
-    mock_shelly(aioclient_mock, settings={"relays": [{"btn_type": "momentary"}]})
-    result = await _start_user(
-        hass, {CONF_NAME: "  ", CONF_SHELLY_HOST: SHELLY_HOST}
-    )
-    assert result["step_id"] == "camera"
-    hint = result["description_placeholders"]["detached_hint"]
-    assert "„momentary“" in hint
-    assert "Detached Switch" in hint
-    assert all(not c[3] for c in aioclient_mock.mock_calls)
-
+async def test_flow_webhook_ohne_beschraenkung(hass: HomeAssistant) -> None:
+    """Webhook ohne Beschränkung, keine Entitäten, kein Gong."""
+    result = await _start(hass)
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_CAMERA_ENTITY: CAMERA}
+        result["flow_id"],
+        _user_input(**{CONF_TRIGGER_ENTITIES: None, CONF_GONG_ENTITY: None}),
+    )
+    assert result["step_id"] == "webhook"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    options = result["options"]
+    assert options[CONF_RESTRICT_IP] is False
+    assert options[CONF_ALLOWED_SOURCES] == []
+    assert options[CONF_TRIGGER_ENTITIES] == []
+    assert options[CONF_GONG_ENTITY] is None
+    assert result["data"][CONF_WEBHOOK_ID]  # zufällig erzeugt
+
+
+async def test_flow_nur_entitaeten(hass: HomeAssistant) -> None:
+    """Ohne Webhook: kein Webhook-Schritt, Hinweis „—“."""
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], _user_input(**{CONF_WEBHOOK_ENABLED: False})
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "Haustür"
-    assert result["data"][CONF_SHELLY_USERNAME] is None
-    assert result["data"][CONF_SHELLY_PASSWORD] is None
-    assert len(result["data"][CONF_WEBHOOK_ID]) > 20
+    assert result["options"][CONF_WEBHOOK_ENABLED] is False
+    assert result["options"][CONF_TRIGGER_ENTITIES] == [TRIGGER]
+    assert result["description_placeholders"] == {"webhook_hint": WEBHOOK_OFF_HINT}
 
 
-async def test_unknown_btn_type_no_hint(hass: HomeAssistant, aioclient_mock) -> None:
-    """Eingangsmodus unbekannt → kein Hinweis."""
-    mock_shelly(aioclient_mock, settings={})
-    result = await _start_user(hass)
-    assert result["description_placeholders"] == {"detached_hint": ""}
+async def test_flow_fehler_user(hass: HomeAssistant) -> None:
+    """Kein Auslöser und leerer Name werden gemeldet, Eingaben bleiben erhalten."""
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        _user_input(
+            **{CONF_NAME: "   ", CONF_WEBHOOK_ENABLED: False, CONF_TRIGGER_ENTITIES: []}
+        ),
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "no_trigger", CONF_NAME: "name_required"}
+    assert _suggested(result, CONF_CAMERA_ENTITY) == CAMERA
+
+
+async def test_flow_kamera_belegt(hass: HomeAssistant, mock_entry) -> None:
+    """Eine Kamera gehört höchstens zu einer Klingel."""
+    mock_entry.add_to_hass(hass)
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], _user_input()
+    )
+    assert result["errors"] == {CONF_CAMERA_ENTITY: "camera_in_use"}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], _user_input(**{CONF_CAMERA_ENTITY: CAMERA_2})
+    )
+    assert result["step_id"] == "webhook"
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "error"),
+    ("restrict", "sources", "error"),
     [
-        ({"exc": aiohttp.ClientConnectionError()}, "cannot_connect"),
-        ({"exc": TimeoutError()}, "cannot_connect"),
-        ({"status": 404}, "not_shelly_gen1"),
-        ({"text": "<html>Router</html>"}, "not_shelly_gen1"),
-        ({"json": ["kein", "dict"]}, "not_shelly_gen1"),
-        ({"json": {"type": "SHSW-1"}}, "not_shelly_gen1"),
-        ({"json": {"mac": SHELLY_MAC, "gen": 2, "model": "SNSW-001X16EU"}}, "not_shelly_gen1"),
+        (False, "192.168.1.50, -ungültig-", "invalid_source"),
+        (True, "999.1.1.1", "invalid_source"),
+        (True, " , ", "source_required"),
+        (True, None, "source_required"),
     ],
 )
-async def test_user_flow_shelly_errors(
-    hass: HomeAssistant, aioclient_mock, kwargs: dict, error: str
+async def test_flow_fehler_quellen(
+    hass: HomeAssistant, restrict: bool, sources: str | None, error: str
 ) -> None:
-    """Fehler beim Abruf von /shelly."""
-    aioclient_mock.get(f"{BASE}/shelly", **kwargs)
-    result = await _start_user(hass)
+    """Ungültige oder fehlende Quellen; danach lässt sich der Flow abschließen."""
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], _user_input()
+    )
+    user_input = {CONF_RESTRICT_IP: restrict}
+    if sources is not None:
+        user_input[CONF_ALLOWED_SOURCES] = sources
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input
+    )
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
-    assert result["errors"] == {"base": error}
+    assert result["step_id"] == "webhook"
+    assert result["errors"] == {CONF_ALLOWED_SOURCES: error}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_RESTRICT_IP: True, CONF_ALLOWED_SOURCES: SHELLY_HOST}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"][CONF_ALLOWED_SOURCES] == [SHELLY_HOST]
 
 
-async def test_user_flow_settings_errors_and_recovery(
-    hass: HomeAssistant, aioclient_mock
-) -> None:
-    """401 → invalid_auth, 500 → cannot_connect, danach Erfolg im selben Flow."""
-    mock_shelly(aioclient_mock, settings_status=401)
-    result = await _start_user(hass)
-    assert result["errors"] == {"base": "invalid_auth"}
-    # Eingaben bleiben erhalten (außer dem Kennwort, das im Formular gezeigt wird).
-    assert result["step_id"] == "user"
+async def test_flow_eigene_entitaeten_ausgeschlossen(hass: HomeAssistant) -> None:
+    """Eigene Entitäten der Integration stehen nicht zur Auswahl (keine Schleifen)."""
+    ent_reg = er.async_get(hass)
+    own_cam = ent_reg.async_get_or_create("camera", DOMAIN, "x_kamera").entity_id
+    own_event = ent_reg.async_get_or_create("event", DOMAIN, "x_klingel").entity_id
+    own_bs = ent_reg.async_get_or_create(
+        "binary_sensor", DOMAIN, "x_klingelt"
+    ).entity_id
+    own_gong = ent_reg.async_get_or_create("switch", DOMAIN, "x_gong").entity_id
+    ent_reg.async_get_or_create("switch", "shelly", "relais")
 
-    aioclient_mock.clear_requests()
-    mock_shelly(aioclient_mock, settings_status=500)
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
-    assert result["errors"] == {"base": "cannot_connect"}
-
-    aioclient_mock.clear_requests()
-    mock_shelly(aioclient_mock)
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
-    assert result["step_id"] == "camera"
+    result = await _start(hass)
+    assert _selector_config(result, CONF_CAMERA_ENTITY)["exclude_entities"] == [own_cam]
+    triggers = _selector_config(result, CONF_TRIGGER_ENTITIES)
+    assert triggers["multiple"] is True
+    assert sorted(triggers["exclude_entities"]) == sorted([own_event, own_bs])
+    assert _selector_config(result, CONF_GONG_ENTITY)["exclude_entities"] == [own_gong]
 
 
-async def test_user_flow_unknown_error(hass: HomeAssistant, aioclient_mock, caplog) -> None:
-    """Unerwartete Ausnahme → unknown und Protokolleintrag."""
-    aioclient_mock.get(f"{BASE}/shelly", json=SHELLY_JSON)
-    with patch(
-        "custom_components.homekit_tuerklingel.config_flow.ShellyGen1Client.async_get_info",
-        side_effect=RuntimeError("kaputt"),
-    ):
-        result = await _start_user(hass)
-    assert result["errors"] == {"base": "unknown"}
-    assert "Unerwarteter Fehler" in caplog.text
+# ---------------------------------------------------------------- Options-Flow
 
 
-async def test_already_configured(
-    hass: HomeAssistant, aioclient_mock, mock_entry: MockConfigEntry
-) -> None:
-    """Gleiche MAC → Abbruch; geänderte IP wird im bestehenden Entry übernommen."""
+async def _options(hass: HomeAssistant, entry: MockConfigEntry) -> dict:
+    entry.add_to_hass(hass)
+    return await hass.config_entries.options.async_init(entry.entry_id)
+
+
+def _options_input(**overrides) -> dict:
+    data = {
+        CONF_CAMERA_ENTITY: CAMERA,
+        CONF_WEBHOOK_ENABLED: True,
+        CONF_RESTRICT_IP: True,
+        CONF_ALLOWED_SOURCES: SHELLY_HOST,
+        CONF_TRIGGER_ENTITIES: [TRIGGER],
+        CONF_GONG_ENTITY: GONG,
+        CONF_AUTO_OFF: 7.0,
+        CONF_NOTIFY_ENABLED: False,
+    }
+    data.update(overrides)
+    return {key: value for key, value in data.items() if value is not None}
+
+
+async def test_options_formular(hass: HomeAssistant, mock_entry) -> None:
+    """Formular zeigt aktuelle Werte, Webhook-URL und notify-Dienste."""
+
+    async def _handler(call: ServiceCall) -> None:
+        return None
+
+    hass.services.async_register("notify", "mobile_app_telefon", _handler)
+    hass.services.async_register("notify", "send_message", _handler)
     mock_entry.add_to_hass(hass)
     hass.config_entries.async_update_entry(
-        mock_entry, data={**mock_entry.data, CONF_SHELLY_HOST: "192.168.1.99"}
-    )
-    mock_shelly(aioclient_mock)
-    result = await _start_user(hass)
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "already_configured"
-    assert mock_entry.data[CONF_SHELLY_HOST] == SHELLY_HOST
-
-
-# ------------------------------------------------------------------ Reauth
-async def test_reauth(hass: HomeAssistant, aioclient_mock, mock_entry: MockConfigEntry) -> None:
-    """Neue Zugangsdaten: erst falsch, dann richtig."""
-    mock_entry.add_to_hass(hass)
-    result = await mock_entry.start_reauth_flow(hass)
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "reauth_confirm"
-    assert result["description_placeholders"]["host"] == SHELLY_HOST
-
-    mock_shelly(aioclient_mock, settings_status=401)
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_SHELLY_USERNAME: "admin", CONF_SHELLY_PASSWORD: "falsch"}
-    )
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "invalid_auth"}
-
-    aioclient_mock.clear_requests()
-    mock_shelly(aioclient_mock)
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_SHELLY_USERNAME: "admin", CONF_SHELLY_PASSWORD: "neu"}
-    )
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "reauth_successful"
-    assert mock_entry.data[CONF_SHELLY_PASSWORD] == "neu"
-    assert mock_entry.data[CONF_SHELLY_USERNAME] == "admin"
-    assert mock_entry.data[CONF_WEBHOOK_ID] == WEBHOOK_ID
-
-
-async def test_reauth_wrong_device(
-    hass: HomeAssistant, aioclient_mock, mock_entry: MockConfigEntry
-) -> None:
-    """Antwortet ein anderer Shelly, wird abgebrochen."""
-    mock_entry.add_to_hass(hass)
-    result = await mock_entry.start_reauth_flow(hass)
-    mock_shelly(aioclient_mock, shelly={**SHELLY_JSON, "mac": "112233445566"})
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "unique_id_mismatch"
-    assert mock_entry.data[CONF_SHELLY_PASSWORD] == "geheim"
-
-
-# ------------------------------------------------------------ Reconfigure
-async def test_reconfigure(
-    hass: HomeAssistant, aioclient_mock, mock_entry: MockConfigEntry
-) -> None:
-    """Neue IP und Kamera, leeres Kennwortfeld behält das bisherige Kennwort."""
-    mock_entry.add_to_hass(hass)
-    result = await mock_entry.start_reconfigure_flow(hass)
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "reconfigure"
-
-    new_host = "192.168.1.51"
-    aioclient_mock.get(f"http://{new_host}/shelly", exc=aiohttp.ClientConnectionError())
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {
-            CONF_SHELLY_HOST: new_host,
-            CONF_SHELLY_USERNAME: "admin",
-            CONF_CAMERA_ENTITY: "camera.neu",
+        mock_entry,
+        options={
+            **mock_entry.options,
+            CONF_ALLOWED_SOURCES: [SHELLY_HOST, "klingel.local"],
+            CONF_GONG_ENTITY: None,
+            CONF_NOTIFY_SERVICES: ["alter_dienst"],
         },
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "cannot_connect"}
-
-    aioclient_mock.clear_requests()
-    mock_shelly(aioclient_mock, host=new_host)
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {
-            CONF_SHELLY_HOST: new_host,
-            CONF_SHELLY_USERNAME: "admin",
-            CONF_CAMERA_ENTITY: "camera.neu",
-        },
-    )
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
-    assert mock_entry.data[CONF_SHELLY_HOST] == new_host
-    assert mock_entry.data[CONF_SHELLY_PASSWORD] == "geheim"
-    assert mock_entry.data[CONF_CAMERA_ENTITY] == "camera.neu"
-    assert mock_entry.data[CONF_WEBHOOK_ID] == WEBHOOK_ID
-
-
-async def test_reconfigure_remove_auth(
-    hass: HomeAssistant, aioclient_mock, mock_entry: MockConfigEntry
-) -> None:
-    """Benutzer leer → Zugangsdaten werden entfernt."""
-    mock_entry.add_to_hass(hass)
-    result = await mock_entry.start_reconfigure_flow(hass)
-    mock_shelly(aioclient_mock)
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_SHELLY_HOST: SHELLY_HOST, CONF_CAMERA_ENTITY: CAMERA}
-    )
-    assert result["reason"] == "reconfigure_successful"
-    assert mock_entry.data[CONF_SHELLY_USERNAME] is None
-    assert mock_entry.data[CONF_SHELLY_PASSWORD] is None
-
-
-async def test_reconfigure_mismatch(
-    hass: HomeAssistant, aioclient_mock, mock_entry: MockConfigEntry
-) -> None:
-    """Anderer Shelly unter der neuen Adresse → unique_id_mismatch."""
-    mock_entry.add_to_hass(hass)
-    result = await mock_entry.start_reconfigure_flow(hass)
-    mock_shelly(aioclient_mock, host="192.168.1.60", shelly={**SHELLY_JSON, "mac": "112233445566"})
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {
-            CONF_SHELLY_HOST: "192.168.1.60",
-            CONF_SHELLY_USERNAME: "admin",
-            CONF_SHELLY_PASSWORD: "geheim",
-            CONF_CAMERA_ENTITY: CAMERA,
-        },
-    )
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "unique_id_mismatch"
-    assert mock_entry.data[CONF_SHELLY_HOST] == SHELLY_HOST
-
-
-# ---------------------------------------------------------------- Options
-OPTIONS_INPUT = {
-    CONF_RESTRICT_IP: True,
-    CONF_ALLOWED_IP: " 192.168.1.77 ",
-    CONF_AUTO_OFF: 12.0,
-    CONF_CONNECTIVITY: False,
-    CONF_NOTIFY_ENABLED: True,
-    CONF_NOTIFY_SERVICES: ["mobile_app_iphone", "notify.mobile_app_ipad", " "],
-    CONF_NOTIFY_TITLE: "Ding Dong",
-    CONF_NOTIFY_MESSAGE: "Besuch an {name}",
-}
-
-
-async def test_options_flow(hass: HomeAssistant, mock_entry: MockConfigEntry) -> None:
-    """Optionen: Dienste-Liste, Platzhalter, ungültige IP, Übernahme der Werte."""
-
-    async def _noop(call: ServiceCall) -> None:
-        return
-
-    hass.services.async_register("notify", "mobile_app_iphone", _noop)
-    hass.services.async_register("notify", "send_message", _noop)
-    mock_entry.add_to_hass(hass)
-    hass.config_entries.async_update_entry(
-        mock_entry, options={CONF_NOTIFY_SERVICES: ["alte_gruppe"]}
-    )
-
     result = await hass.config_entries.options.async_init(mock_entry.entry_id)
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "init"
+    url = f"{INTERNAL_URL}/api/webhook/{WEBHOOK_ID}"
     assert result["description_placeholders"] == {
-        "webhook_url": f"{INTERNAL_URL}/api/webhook/{WEBHOOK_ID}",
+        "webhook_url": f"`{url}`",
         "name": "{name}",
     }
-    schema = result["data_schema"].schema
-    services_key = next(k for k in schema if k == CONF_NOTIFY_SERVICES)
-    options = schema[services_key].config["options"]
-    assert options == ["alte_gruppe", "mobile_app_iphone"]
-    # Vorbelegung aus den Standardwerten
-    auto_off_key = next(k for k in schema if k == CONF_AUTO_OFF)
-    assert auto_off_key.description == {"suggested_value": DEFAULT_AUTO_OFF}
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**OPTIONS_INPUT, CONF_ALLOWED_IP: "kein host!"}
-    )
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {CONF_ALLOWED_IP: "invalid_ip"}
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], OPTIONS_INPUT
-    )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert mock_entry.options == {
-        CONF_RESTRICT_IP: True,
-        CONF_ALLOWED_IP: "192.168.1.77",
-        CONF_AUTO_OFF: 12,
-        CONF_CONNECTIVITY: False,
-        CONF_NOTIFY_ENABLED: True,
-        CONF_NOTIFY_SERVICES: ["mobile_app_iphone", "mobile_app_ipad"],
-        CONF_NOTIFY_TITLE: "Ding Dong",
-        CONF_NOTIFY_MESSAGE: "Besuch an {name}",
-    }
-    assert isinstance(mock_entry.options[CONF_AUTO_OFF], int)
+    assert _suggested(result, CONF_CAMERA_ENTITY) == CAMERA
+    assert _suggested(result, CONF_ALLOWED_SOURCES) == f"{SHELLY_HOST}, klingel.local"
+    assert _suggested(result, CONF_GONG_ENTITY) is None
+    assert _suggested(result, CONF_AUTO_OFF) == DEFAULT_AUTO_OFF
+    assert _selector_config(result, CONF_NOTIFY_SERVICES)["options"] == [
+        "alter_dienst",
+        "mobile_app_telefon",
+    ]
 
 
-async def test_options_flow_minimal(hass: HomeAssistant, mock_entry: MockConfigEntry) -> None:
-    """Leere optionale Felder: Hostname erlaubt, Texte fallen auf Standard zurück."""
+async def test_options_webhook_aus_hinweis(hass: HomeAssistant, mock_entry) -> None:
+    """Bei ausgeschaltetem Webhook zeigt die Beschreibung „—“."""
     mock_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_entry, options={**mock_entry.options, CONF_WEBHOOK_ENABLED: False}
+    )
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    assert result["description_placeholders"]["webhook_url"] == WEBHOOK_OFF_HINT
+
+
+async def test_options_speichern(hass: HomeAssistant, mock_entry) -> None:
+    """Kamera wechseln (entry.data), Gong leer → None, notify bereinigt, Hinweis gelöscht."""
+    mock_entry.add_to_hass(hass)
+    issue_id = f"{ISSUE_GONG_SELECT}_{mock_entry.entry_id}"
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        is_persistent=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=ISSUE_GONG_SELECT,
+        translation_placeholders={"name": mock_entry.title},
+    )
     result = await hass.config_entries.options.async_init(mock_entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {
-            CONF_RESTRICT_IP: False,
-            CONF_ALLOWED_IP: "shelly-klingel.local",
-            CONF_AUTO_OFF: 300,
-            CONF_CONNECTIVITY: True,
-            CONF_NOTIFY_ENABLED: False,
-        },
+        _options_input(
+            **{
+                CONF_CAMERA_ENTITY: CAMERA_2,
+                CONF_GONG_ENTITY: None,
+                CONF_ALLOWED_SOURCES: f"{SHELLY_HOST},klingel.local",
+                CONF_NOTIFY_ENABLED: True,
+                CONF_NOTIFY_SERVICES: ["notify.mobile_app_telefon", "  ", "pushover"],
+                CONF_NOTIFY_TITLE: "  ",
+                CONF_NOTIFY_MESSAGE: " Tür {name} ",
+            }
+        ),
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    expected = {
+        CONF_WEBHOOK_ENABLED: True,
+        CONF_RESTRICT_IP: True,
+        CONF_ALLOWED_SOURCES: [SHELLY_HOST, "klingel.local"],
+        CONF_TRIGGER_ENTITIES: [TRIGGER],
+        CONF_GONG_ENTITY: None,
+        CONF_AUTO_OFF: 7,
+        CONF_NOTIFY_ENABLED: True,
+        CONF_NOTIFY_SERVICES: ["mobile_app_telefon", "pushover"],
+        CONF_NOTIFY_TITLE: DEFAULT_NOTIFY_TITLE,
+        CONF_NOTIFY_MESSAGE: "Tür {name}",
+    }
+    assert result["data"] == expected
+    assert dict(mock_entry.options) == expected
+    assert dict(mock_entry.data) == {
+        CONF_WEBHOOK_ID: WEBHOOK_ID,
+        CONF_CAMERA_ENTITY: CAMERA_2,
+    }
+    assert isinstance(mock_entry.options[CONF_AUTO_OFF], int)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_options_ein_neuladen(hass: HomeAssistant, mock_entry) -> None:
+    """Daten und Optionen werden zusammen gespeichert: Update-Listener nur einmal."""
+    mock_entry.add_to_hass(hass)
+    calls: list[str] = []
+
+    async def _listener(hass: HomeAssistant, entry) -> None:
+        calls.append(entry.data[CONF_CAMERA_ENTITY])
+
+    mock_entry.add_update_listener(_listener)
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    await hass.config_entries.options.async_configure(
+        result["flow_id"], _options_input(**{CONF_CAMERA_ENTITY: CAMERA_2})
+    )
+    await hass.async_block_till_done()
+    assert calls == [CAMERA_2]
+
+
+async def test_options_nur_entitaeten(hass: HomeAssistant, mock_entry) -> None:
+    """Webhook aus: Beschränkung ohne Quellen ist erlaubt."""
+    result = await _options(hass, mock_entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        _options_input(**{CONF_WEBHOOK_ENABLED: False, CONF_ALLOWED_SOURCES: None}),
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert mock_entry.options[CONF_ALLOWED_IP] == "shelly-klingel.local"
-    assert mock_entry.options[CONF_NOTIFY_SERVICES] == []
-    assert mock_entry.options[CONF_NOTIFY_TITLE] == DEFAULT_NOTIFY_TITLE
-    assert mock_entry.options[CONF_NOTIFY_MESSAGE] == DEFAULT_NOTIFY_MESSAGE
+    assert result["data"][CONF_WEBHOOK_ENABLED] is False
+    assert result["data"][CONF_ALLOWED_SOURCES] == []
 
 
-async def test_options_auto_off_range(hass: HomeAssistant, mock_entry: MockConfigEntry) -> None:
-    """auto_off außerhalb 1–300 wird vom Selector abgelehnt."""
-    from homeassistant.data_entry_flow import InvalidData
+@pytest.mark.parametrize(
+    ("overrides", "errors"),
+    [
+        (
+            {CONF_WEBHOOK_ENABLED: False, CONF_TRIGGER_ENTITIES: []},
+            {"base": "no_trigger"},
+        ),
+        (
+            {CONF_WEBHOOK_ENABLED: False, CONF_TRIGGER_ENTITIES: None},
+            {"base": "no_trigger"},
+        ),
+        (
+            {CONF_ALLOWED_SOURCES: "klingel..local"},
+            {CONF_ALLOWED_SOURCES: "invalid_source"},
+        ),
+        ({CONF_ALLOWED_SOURCES: None}, {CONF_ALLOWED_SOURCES: "source_required"}),
+        ({CONF_CAMERA_ENTITY: CAMERA_2}, {CONF_CAMERA_ENTITY: "camera_in_use"}),
+    ],
+)
+async def test_options_fehler(
+    hass: HomeAssistant, mock_entry, overrides: dict, errors: dict
+) -> None:
+    """Gleiche Prüfungen wie bei der Einrichtung; Eingaben bleiben erhalten."""
+    MockConfigEntry(
+        domain=DOMAIN,
+        title="Garten",
+        data={CONF_WEBHOOK_ID: "anderer", CONF_CAMERA_ENTITY: CAMERA_2},
+        version=CONFIG_VERSION,
+    ).add_to_hass(hass)
+    result = await _options(hass, mock_entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], _options_input(**overrides)
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == errors
+    assert _suggested(result, CONF_AUTO_OFF) == 7.0
+    assert dict(mock_entry.data)[CONF_CAMERA_ENTITY] == CAMERA
 
-    mock_entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
-    with pytest.raises(InvalidData):
-        await hass.config_entries.options.async_configure(
-            result["flow_id"],
-            {
-                CONF_RESTRICT_IP: True,
-                CONF_AUTO_OFF: 0,
-                CONF_CONNECTIVITY: True,
-                CONF_NOTIFY_ENABLED: False,
-            },
-        )
+
+async def test_options_eigene_kamera_bleibt_erlaubt(
+    hass: HomeAssistant, mock_entry
+) -> None:
+    """Die eigene Kamera gilt nicht als belegt."""
+    result = await _options(hass, mock_entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], _options_input()
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert dict(mock_entry.data)[CONF_CAMERA_ENTITY] == CAMERA

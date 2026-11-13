@@ -28,8 +28,6 @@ from .const import (
     V1_CONNECTIVITY,
     V1_SHELLY_HOST,
     V1_SHELLY_MAC,
-    V1_SHELLY_PASSWORD,
-    V1_SHELLY_USERNAME,
 )
 from .hub import TuerklingelHub
 from .issues import async_check_issues, async_remove_issues
@@ -82,14 +80,14 @@ def _find_switch_for_mac(hass: HomeAssistant, mac: str | None) -> str | None:
     """switch-Entität eines Geräts mit dieser MAC (z. B. aus der Shelly-Integration)."""
     if not mac:
         return None
-    device = dr.async_get(hass).async_get_device(
+    devices = dr.async_get(hass).async_get_devices(
         connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))}
     )
-    if device is None:
-        return None
+    ent_reg = er.async_get(hass)
     switches = [
         e.entity_id
-        for e in er.async_entries_for_device(er.async_get(hass), device.id)
+        for device in devices
+        for e in er.async_entries_for_device(ent_reg, device.id)
         if e.domain == "switch" and e.disabled_by is None
     ]
     return switches[0] if len(switches) == 1 else None
@@ -117,8 +115,6 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_WEBHOOK_ID: data[CONF_WEBHOOK_ID],
             CONF_CAMERA_ENTITY: data[CONF_CAMERA_ENTITY],
         }
-        for key in (V1_SHELLY_HOST, V1_SHELLY_USERNAME, V1_SHELLY_PASSWORD, V1_SHELLY_MAC):
-            data.pop(key, None)
 
         ent_reg = er.async_get(hass)
         if old := ent_reg.async_get_entity_id(

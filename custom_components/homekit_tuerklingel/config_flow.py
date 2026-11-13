@@ -1,13 +1,19 @@
-"""Config-Flow und Options-Flow der Integration HomeKit Türklingel."""
+"""Config-Flow und Options-Flow der Integration HomeKit Türklingel.
+
+Eine Klingel besteht aus:
+- Auslöser: Webhook (GET/POST, nur LAN) und/oder beliebige HA-Entitäten
+- Kamera: beliebige camera-Entität (eine Klingel pro Kamera, wegen HomeKit)
+- Gong (optional): beliebige switch-Entität, die beim Klingeln gepulst wird
+
+Alle Einstellungen außer dem Namen lassen sich später über die Optionen ändern;
+reauth und reconfigure gibt es deshalb nicht.
+"""
 
 from __future__ import annotations
 
-import asyncio
-import logging
-from collections.abc import Mapping
+import re
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 from homeassistant.components.webhook import async_generate_id
 from homeassistant.config_entries import (
@@ -18,126 +24,115 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util.network import is_host_valid
 
 from .const import (
-    CONF_ALLOWED_IP,
+    CONF_ALLOWED_SOURCES,
     CONF_AUTO_OFF,
     CONF_CAMERA_ENTITY,
-    CONF_CONNECTIVITY,
+    CONF_GONG_ENTITY,
     CONF_NOTIFY_ENABLED,
     CONF_NOTIFY_MESSAGE,
     CONF_NOTIFY_SERVICES,
     CONF_NOTIFY_TITLE,
     CONF_RESTRICT_IP,
-    CONF_SHELLY_HOST,
-    CONF_SHELLY_MAC,
-    CONF_SHELLY_PASSWORD,
-    CONF_SHELLY_USERNAME,
+    CONF_TRIGGER_ENTITIES,
+    CONF_WEBHOOK_ENABLED,
     CONF_WEBHOOK_ID,
+    CONFIG_VERSION,
     DEFAULT_AUTO_OFF,
-    DEFAULT_CONNECTIVITY,
     DEFAULT_NOTIFY_ENABLED,
     DEFAULT_NOTIFY_MESSAGE,
     DEFAULT_NOTIFY_TITLE,
     DEFAULT_RESTRICT_IP,
+    DEFAULT_WEBHOOK_ENABLED,
     DOMAIN,
-    SHELLY_TIMEOUT,
+    ISSUE_GONG_SELECT,
+    TRIGGER_DOMAINS,
 )
-from .shelly import ShellyAuthError, ShellyConnectionError, ShellyGen1Client, ShellyInfo
 from .util import async_get_webhook_url
 
-_LOGGER = logging.getLogger(__name__)
-
-DEFAULT_NAME = "Haustür"
 MIN_AUTO_OFF = 1
 MAX_AUTO_OFF = 300
+WEBHOOK_OFF_HINT = "—"
+"""Platzhalter für die Webhook-URL, wenn der Webhook ausgeschaltet ist."""
 
-PASSWORD_SELECTOR = selector.TextSelector(
-    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-)
-CAMERA_SELECTOR = selector.EntitySelector(selector.EntitySelectorConfig(domain="camera"))
-
-
-class NotShellyGen1Error(Exception):
-    """Unter der Adresse antwortet etwas, aber kein Shelly Gen1."""
+_SOURCE_SPLIT = re.compile(r"[,;\s]+")
 
 
-def _normalize_host(host: str) -> str:
-    """Eingabe bereinigen: Leerzeichen, Schema und abschließenden Schrägstrich entfernen."""
-    host = host.strip()
-    for prefix in ("http://", "https://"):
-        if host.lower().startswith(prefix):
-            host = host[len(prefix) :]
-    return host.rstrip("/")
+def _own_entities(hass: HomeAssistant, domain: str) -> list[str]:
+    """Entitäten dieser Integration einer Domain (dürfen nicht ausgewählt werden).
 
-
-async def _async_check_gen1(hass: HomeAssistant, host: str) -> None:
-    """Antwort von /shelly selbst prüfen, um 'kein Shelly Gen1' zu erkennen.
-
-    Verbindungsfehler werden hier bewusst ignoriert; die meldet anschließend
-    der eigentliche Verbindungstest als cannot_connect.
+    Verhindert Schleifen, z. B. die eigene Proxy-Kamera als Kamera, das eigene
+    Klingel-Event als Auslöser oder den eigenen Gong-Schalter als Gong.
     """
-    session = async_get_clientsession(hass)
-    try:
-        async with asyncio.timeout(SHELLY_TIMEOUT):
-            async with session.get(f"http://{host}/shelly") as resp:
-                if resp.status != 200:
-                    raise NotShellyGen1Error(f"HTTP {resp.status}")
-                try:
-                    data = await resp.json(content_type=None)
-                except ValueError as err:
-                    raise NotShellyGen1Error("keine JSON-Antwort") from err
-    except (TimeoutError, aiohttp.ClientError):
-        return
-    if not isinstance(data, dict) or not data.get("mac"):
-        raise NotShellyGen1Error("keine MAC-Adresse")
-    # Gen2/Gen3 liefern 'gen' >= 2; Gen1 kennt das Feld nicht.
-    if data.get("gen", 1) != 1:
-        raise NotShellyGen1Error(f"Generation {data.get('gen')}")
+    return sorted(
+        entry.entity_id
+        for entry in er.async_get(hass).entities.values()
+        if entry.platform == DOMAIN and entry.domain == domain
+    )
 
 
-async def _async_test_shelly(
-    hass: HomeAssistant, host: str, username: str | None, password: str | None
-) -> tuple[ShellyInfo | None, dict[str, str]]:
-    """Verbindungstest; liefert (Info, Fehler)."""
-    try:
-        await _async_check_gen1(hass, host)
-        client = ShellyGen1Client(async_get_clientsession(hass), host, username, password)
-        info = await client.async_get_info(with_settings=True)
-    except NotShellyGen1Error as err:
-        _LOGGER.debug("%s ist kein Shelly Gen1: %s", host, err)
-        return None, {"base": "not_shelly_gen1"}
-    except ShellyAuthError:
-        return None, {"base": "invalid_auth"}
-    except ShellyConnectionError as err:
-        _LOGGER.debug("Shelly %s nicht erreichbar: %s", host, err)
-        return None, {"base": "cannot_connect"}
-    except Exception:
-        _LOGGER.exception("Unerwarteter Fehler beim Verbindungstest mit %s", host)
-        return None, {"base": "unknown"}
-    return info, {}
+def _entity_selector(
+    hass: HomeAssistant, domains: str | list[str], *, multiple: bool = False
+) -> selector.EntitySelector:
+    """Entitäts-Auswahl ohne die eigenen Entitäten der Integration."""
+    domain_list = [domains] if isinstance(domains, str) else domains
+    exclude = [eid for domain in domain_list for eid in _own_entities(hass, domain)]
+    config = selector.EntitySelectorConfig(
+        domain=domains, multiple=multiple, exclude_entities=exclude
+    )
+    return selector.EntitySelector(config)
 
 
-def _detached_hint(info: ShellyInfo | None) -> str:
-    """Hinweis, wenn der Eingang des Shelly nicht auf 'detached' steht."""
-    if info is None or info.detached is not False:
-        return ""
-    return (
-        f"\n\n⚠️ Der Eingang des Shelly steht auf „{info.btn_type}“. "
-        "Für den stummschaltbaren Gong bitte „Detached Switch“ einstellen."
+def _parse_sources(value: Any) -> list[str]:
+    """Kommagetrennte Liste (auch Semikolon/Leerzeichen) in einzelne Quellen zerlegen."""
+    if isinstance(value, list):
+        value = ",".join(str(item) for item in value)
+    parts = _SOURCE_SPLIT.split(str(value or "").strip())
+    # IPv6 darf in eckigen Klammern stehen, gespeichert wird ohne.
+    return [part.strip("[]") for part in parts if part.strip("[]")]
+
+
+def _source_valid(source: str) -> bool:
+    """IP-Adresse (IPv4/IPv6) oder gültiger Hostname."""
+    return is_host_valid(source)
+
+
+def _validate_sources(
+    sources: list[str], webhook_enabled: bool, restrict_ip: bool
+) -> dict[str, str]:
+    """Fehler der Quell-Liste (leer, wenn alles in Ordnung)."""
+    if any(not _source_valid(source) for source in sources):
+        return {CONF_ALLOWED_SOURCES: "invalid_source"}
+    if webhook_enabled and restrict_ip and not sources:
+        return {CONF_ALLOWED_SOURCES: "source_required"}
+    return {}
+
+
+def _camera_in_use(
+    hass: HomeAssistant, camera_entity_id: str, own_entry_id: str | None = None
+) -> bool:
+    """Nutzt schon eine andere Klingel dieser Integration diese Kamera?"""
+    return any(
+        entry.data.get(CONF_CAMERA_ENTITY) == camera_entity_id
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.entry_id != own_entry_id
     )
 
 
 def _default_options() -> dict[str, Any]:
-    """Standardwerte der Optionen für einen neuen Entry."""
+    """Standardwerte aller Optionen."""
     return {
+        CONF_WEBHOOK_ENABLED: DEFAULT_WEBHOOK_ENABLED,
         CONF_RESTRICT_IP: DEFAULT_RESTRICT_IP,
-        CONF_ALLOWED_IP: "",
+        CONF_ALLOWED_SOURCES: [],
+        CONF_TRIGGER_ENTITIES: [],
+        CONF_GONG_ENTITY: None,
         CONF_AUTO_OFF: DEFAULT_AUTO_OFF,
-        CONF_CONNECTIVITY: DEFAULT_CONNECTIVITY,
         CONF_NOTIFY_ENABLED: DEFAULT_NOTIFY_ENABLED,
         CONF_NOTIFY_SERVICES: [],
         CONF_NOTIFY_TITLE: DEFAULT_NOTIFY_TITLE,
@@ -145,15 +140,30 @@ def _default_options() -> dict[str, Any]:
     }
 
 
-class TuerklingelConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Einrichtung einer Klingel: Shelly prüfen, dann Kamera wählen."""
+def _webhook_hint(hass: HomeAssistant, webhook_id: str, enabled: bool) -> str:
+    """Webhook-URL als Code oder „—“, wenn der Webhook ausgeschaltet ist."""
+    if not enabled:
+        return WEBHOOK_OFF_HINT
+    return f"`{async_get_webhook_url(hass, webhook_id)}`"
 
-    VERSION = 1
+
+def _without_none(values: dict[str, Any]) -> dict[str, Any]:
+    """None-Werte entfernen (sonst zeigt das Formular „None“ als Vorschlag)."""
+    return {key: value for key, value in values.items() if value is not None}
+
+
+class TuerklingelConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Einrichtung einer Klingel: Auslöser, Kamera, Gong, ggf. Webhook-Schutz."""
+
+    VERSION = CONFIG_VERSION
+    MINOR_VERSION = 1
 
     def __init__(self) -> None:
         """Zwischenstand des Flows."""
-        self._user_input: dict[str, Any] = {}
-        self._info: ShellyInfo | None = None
+        self._name: str = ""
+        self._camera: str = ""
+        self._webhook_id: str = ""
+        self._options: dict[str, Any] = _default_options()
 
     @staticmethod
     @callback
@@ -164,32 +174,45 @@ class TuerklingelConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Name und Zugangsdaten des Shelly abfragen und testen."""
+        """Name, Kamera, Auslöser und Gong abfragen."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            host = _normalize_host(user_input[CONF_SHELLY_HOST])
-            username = user_input.get(CONF_SHELLY_USERNAME) or None
-            password = user_input.get(CONF_SHELLY_PASSWORD) or None
-            info, errors = await _async_test_shelly(self.hass, host, username, password)
-            if info is not None:
-                await self.async_set_unique_id(info.mac)
-                self._abort_if_unique_id_configured(updates={CONF_SHELLY_HOST: host})
-                self._info = info
-                self._user_input = {
-                    CONF_NAME: user_input[CONF_NAME].strip() or DEFAULT_NAME,
-                    CONF_SHELLY_HOST: host,
-                    CONF_SHELLY_USERNAME: username,
-                    CONF_SHELLY_PASSWORD: password,
-                    CONF_SHELLY_MAC: info.mac,
-                }
-                return await self.async_step_camera()
+            name = str(user_input[CONF_NAME]).strip()
+            camera = user_input[CONF_CAMERA_ENTITY]
+            webhook_enabled = bool(user_input.get(CONF_WEBHOOK_ENABLED, True))
+            triggers = list(user_input.get(CONF_TRIGGER_ENTITIES) or [])
+            if not name:
+                errors[CONF_NAME] = "name_required"
+            if _camera_in_use(self.hass, camera):
+                errors[CONF_CAMERA_ENTITY] = "camera_in_use"
+            if not webhook_enabled and not triggers:
+                errors["base"] = "no_trigger"
+            if not errors:
+                self._name = name
+                self._camera = camera
+                self._webhook_id = async_generate_id()
+                self._options.update(
+                    {
+                        CONF_WEBHOOK_ENABLED: webhook_enabled,
+                        CONF_TRIGGER_ENTITIES: triggers,
+                        CONF_GONG_ENTITY: user_input.get(CONF_GONG_ENTITY) or None,
+                    }
+                )
+                if webhook_enabled:
+                    return await self.async_step_webhook()
+                return self._async_create()
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
-                vol.Required(CONF_SHELLY_HOST): str,
-                vol.Optional(CONF_SHELLY_USERNAME): str,
-                vol.Optional(CONF_SHELLY_PASSWORD): PASSWORD_SELECTOR,
+                vol.Required(CONF_NAME): selector.TextSelector(),
+                vol.Required(CONF_CAMERA_ENTITY): _entity_selector(self.hass, "camera"),
+                vol.Required(
+                    CONF_WEBHOOK_ENABLED, default=DEFAULT_WEBHOOK_ENABLED
+                ): selector.BooleanSelector(),
+                vol.Optional(CONF_TRIGGER_ENTITIES): _entity_selector(
+                    self.hass, list(TRIGGER_DOMAINS), multiple=True
+                ),
+                vol.Optional(CONF_GONG_ENTITY): _entity_selector(self.hass, "switch"),
             }
         )
         return self.async_show_form(
@@ -198,140 +221,58 @@ class TuerklingelConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_camera(
+    async def async_step_webhook(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Kamera-Entität wählen und Entry anlegen."""
-        if user_input is not None:
-            data = {
-                key: value for key, value in self._user_input.items() if key != CONF_NAME
-            }
-            data[CONF_CAMERA_ENTITY] = user_input[CONF_CAMERA_ENTITY]
-            data[CONF_WEBHOOK_ID] = async_generate_id()
-            return self.async_create_entry(
-                title=self._user_input[CONF_NAME],
-                data=data,
-                options=_default_options(),
-                description_placeholders={
-                    "webhook_url": async_get_webhook_url(self.hass, data[CONF_WEBHOOK_ID])
-                },
-            )
-
-        return self.async_show_form(
-            step_id="camera",
-            data_schema=vol.Schema({vol.Required(CONF_CAMERA_ENTITY): CAMERA_SELECTOR}),
-            description_placeholders={"detached_hint": _detached_hint(self._info)},
-        )
-
-    async def async_step_reauth(
-        self, entry_data: Mapping[str, Any]
-    ) -> ConfigFlowResult:
-        """Shelly lehnt die gespeicherten Zugangsdaten ab."""
-        return await self.async_step_reauth_confirm()
-
-    async def async_step_reauth_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Neue Zugangsdaten abfragen und testen."""
-        entry = self._get_reauth_entry()
-        host: str = entry.data[CONF_SHELLY_HOST]
+        """Webhook optional auf bestimmte Quellen beschränken."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            username = user_input.get(CONF_SHELLY_USERNAME) or None
-            password = user_input.get(CONF_SHELLY_PASSWORD) or None
-            info, errors = await _async_test_shelly(self.hass, host, username, password)
-            if info is not None:
-                await self.async_set_unique_id(info.mac)
-                self._abort_if_unique_id_mismatch()
-                # Neu laden übernimmt der Update-Listener aus __init__.py.
-                return self.async_update_and_abort(
-                    entry,
-                    data_updates={
-                        CONF_SHELLY_USERNAME: username,
-                        CONF_SHELLY_PASSWORD: password,
-                    },
-                )
+            restrict = bool(user_input.get(CONF_RESTRICT_IP, DEFAULT_RESTRICT_IP))
+            sources = _parse_sources(user_input.get(CONF_ALLOWED_SOURCES))
+            errors = _validate_sources(sources, True, restrict)
+            if not errors:
+                self._options[CONF_RESTRICT_IP] = restrict
+                self._options[CONF_ALLOWED_SOURCES] = sources
+                return self._async_create()
 
         schema = vol.Schema(
             {
-                vol.Optional(CONF_SHELLY_USERNAME): str,
-                vol.Optional(CONF_SHELLY_PASSWORD): PASSWORD_SELECTOR,
+                vol.Required(
+                    CONF_RESTRICT_IP, default=DEFAULT_RESTRICT_IP
+                ): selector.BooleanSelector(),
+                vol.Optional(CONF_ALLOWED_SOURCES): selector.TextSelector(),
             }
         )
-        suggested = user_input or {
-            CONF_SHELLY_USERNAME: entry.data.get(CONF_SHELLY_USERNAME) or ""
-        }
         return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            step_id="webhook",
+            data_schema=self.add_suggested_values_to_schema(schema, user_input),
             errors=errors,
-            description_placeholders={"host": host},
+            description_placeholders={
+                "webhook_url": async_get_webhook_url(self.hass, self._webhook_id)
+            },
         )
 
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Host, Zugangsdaten und Kamera ändern."""
-        entry = self._get_reconfigure_entry()
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            host = _normalize_host(user_input[CONF_SHELLY_HOST])
-            username = user_input.get(CONF_SHELLY_USERNAME) or None
-            password = user_input.get(CONF_SHELLY_PASSWORD) or None
-            if (
-                username is not None
-                and password is None
-                and username == entry.data.get(CONF_SHELLY_USERNAME)
-            ):
-                # Leeres Kennwortfeld bei gleichem Benutzer: bisheriges behalten.
-                password = entry.data.get(CONF_SHELLY_PASSWORD)
-            info, errors = await _async_test_shelly(self.hass, host, username, password)
-            if info is not None:
-                await self.async_set_unique_id(info.mac)
-                self._abort_if_unique_id_mismatch()
-                # Neu laden übernimmt der Update-Listener aus __init__.py.
-                return self.async_update_and_abort(
-                    entry,
-                    data_updates={
-                        CONF_SHELLY_HOST: host,
-                        CONF_SHELLY_USERNAME: username,
-                        CONF_SHELLY_PASSWORD: password,
-                        CONF_CAMERA_ENTITY: user_input[CONF_CAMERA_ENTITY],
-                    },
+    @callback
+    def _async_create(self) -> ConfigFlowResult:
+        """Entry anlegen."""
+        return self.async_create_entry(
+            title=self._name,
+            data={CONF_WEBHOOK_ID: self._webhook_id, CONF_CAMERA_ENTITY: self._camera},
+            options=dict(self._options),
+            description_placeholders={
+                "webhook_hint": _webhook_hint(
+                    self.hass, self._webhook_id, self._options[CONF_WEBHOOK_ENABLED]
                 )
-
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_SHELLY_HOST): str,
-                vol.Optional(CONF_SHELLY_USERNAME): str,
-                vol.Optional(CONF_SHELLY_PASSWORD): PASSWORD_SELECTOR,
-                vol.Required(CONF_CAMERA_ENTITY): CAMERA_SELECTOR,
-            }
-        )
-        if user_input is not None:
-            suggested: dict[str, Any] = {
-                key: value
-                for key, value in user_input.items()
-                if key != CONF_SHELLY_PASSWORD
-            }
-        else:
-            suggested = {
-                CONF_SHELLY_HOST: entry.data[CONF_SHELLY_HOST],
-                CONF_SHELLY_USERNAME: entry.data.get(CONF_SHELLY_USERNAME) or "",
-                CONF_CAMERA_ENTITY: entry.data[CONF_CAMERA_ENTITY],
-            }
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=self.add_suggested_values_to_schema(schema, suggested),
-            errors=errors,
+            },
         )
 
 
 class TuerklingelOptionsFlow(OptionsFlow):
-    """Optionen einer Klingel.
+    """Optionen einer Klingel (inkl. Kamera).
 
     Bewusst kein OptionsFlowWithReload: __init__.py lädt über seinen
-    Update-Listener neu, ein zweites Neuladen wird so vermieden.
+    Update-Listener neu. Daten und Optionen werden in einem Schritt
+    gespeichert, damit nur einmal neu geladen wird.
     """
 
     def _notify_service_options(self, configured: list[str]) -> list[str]:
@@ -348,39 +289,74 @@ class TuerklingelOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Optionen bearbeiten."""
+        entry = self.config_entry
         errors: dict[str, str] = {}
         if user_input is not None:
-            allowed_ip = str(user_input.get(CONF_ALLOWED_IP) or "").strip()
-            if allowed_ip and not is_host_valid(allowed_ip):
-                errors[CONF_ALLOWED_IP] = "invalid_ip"
-            else:
-                return self.async_create_entry(
-                    data={
-                        CONF_RESTRICT_IP: user_input[CONF_RESTRICT_IP],
-                        CONF_ALLOWED_IP: allowed_ip,
-                        CONF_AUTO_OFF: int(user_input[CONF_AUTO_OFF]),
-                        CONF_CONNECTIVITY: user_input[CONF_CONNECTIVITY],
-                        CONF_NOTIFY_ENABLED: user_input[CONF_NOTIFY_ENABLED],
-                        CONF_NOTIFY_SERVICES: [
-                            str(svc).strip().removeprefix("notify.")
-                            for svc in user_input.get(CONF_NOTIFY_SERVICES, [])
-                            if str(svc).strip()
-                        ],
-                        CONF_NOTIFY_TITLE: str(
-                            user_input.get(CONF_NOTIFY_TITLE) or DEFAULT_NOTIFY_TITLE
-                        ).strip(),
-                        CONF_NOTIFY_MESSAGE: str(
-                            user_input.get(CONF_NOTIFY_MESSAGE) or DEFAULT_NOTIFY_MESSAGE
-                        ).strip(),
-                    }
+            camera = user_input[CONF_CAMERA_ENTITY]
+            webhook_enabled = bool(user_input.get(CONF_WEBHOOK_ENABLED))
+            restrict = bool(user_input.get(CONF_RESTRICT_IP))
+            sources = _parse_sources(user_input.get(CONF_ALLOWED_SOURCES))
+            triggers = list(user_input.get(CONF_TRIGGER_ENTITIES) or [])
+            errors = _validate_sources(sources, webhook_enabled, restrict)
+            if _camera_in_use(self.hass, camera, entry.entry_id):
+                errors[CONF_CAMERA_ENTITY] = "camera_in_use"
+            if not webhook_enabled and not triggers:
+                errors["base"] = "no_trigger"
+            if not errors:
+                options = {
+                    CONF_WEBHOOK_ENABLED: webhook_enabled,
+                    CONF_RESTRICT_IP: restrict,
+                    CONF_ALLOWED_SOURCES: sources,
+                    CONF_TRIGGER_ENTITIES: triggers,
+                    # Leeres Feld: Das Frontend lässt den Schlüssel weg → kein Gong.
+                    CONF_GONG_ENTITY: user_input.get(CONF_GONG_ENTITY) or None,
+                    CONF_AUTO_OFF: int(user_input[CONF_AUTO_OFF]),
+                    CONF_NOTIFY_ENABLED: bool(user_input.get(CONF_NOTIFY_ENABLED)),
+                    CONF_NOTIFY_SERVICES: [
+                        str(svc).strip().removeprefix("notify.")
+                        for svc in user_input.get(CONF_NOTIFY_SERVICES) or []
+                        if str(svc).strip()
+                    ],
+                    CONF_NOTIFY_TITLE: str(
+                        user_input.get(CONF_NOTIFY_TITLE) or ""
+                    ).strip()
+                    or DEFAULT_NOTIFY_TITLE,
+                    CONF_NOTIFY_MESSAGE: str(
+                        user_input.get(CONF_NOTIFY_MESSAGE) or ""
+                    ).strip()
+                    or DEFAULT_NOTIFY_MESSAGE,
+                }
+                # Kamera liegt in entry.data: Daten und Optionen zusammen speichern
+                # (ein Neuladen). async_create_entry findet danach keine Änderung mehr.
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data={**entry.data, CONF_CAMERA_ENTITY: camera},
+                    options=options,
                 )
+                ir.async_delete_issue(
+                    self.hass, DOMAIN, f"{ISSUE_GONG_SELECT}_{entry.entry_id}"
+                )
+                return self.async_create_entry(data=options)
 
-        current = {**_default_options(), **self.config_entry.options}
+        current: dict[str, Any] = {
+            **_default_options(),
+            **entry.options,
+            CONF_CAMERA_ENTITY: entry.data.get(CONF_CAMERA_ENTITY),
+        }
+        current[CONF_ALLOWED_SOURCES] = ", ".join(
+            _parse_sources(current.get(CONF_ALLOWED_SOURCES))
+        )
         configured: list[str] = list(current.get(CONF_NOTIFY_SERVICES) or [])
         schema = vol.Schema(
             {
+                vol.Required(CONF_CAMERA_ENTITY): _entity_selector(self.hass, "camera"),
+                vol.Required(CONF_WEBHOOK_ENABLED): selector.BooleanSelector(),
                 vol.Required(CONF_RESTRICT_IP): selector.BooleanSelector(),
-                vol.Optional(CONF_ALLOWED_IP): selector.TextSelector(),
+                vol.Optional(CONF_ALLOWED_SOURCES): selector.TextSelector(),
+                vol.Optional(CONF_TRIGGER_ENTITIES): _entity_selector(
+                    self.hass, list(TRIGGER_DOMAINS), multiple=True
+                ),
+                vol.Optional(CONF_GONG_ENTITY): _entity_selector(self.hass, "switch"),
                 vol.Required(CONF_AUTO_OFF): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=MIN_AUTO_OFF,
@@ -390,7 +366,6 @@ class TuerklingelOptionsFlow(OptionsFlow):
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
-                vol.Required(CONF_CONNECTIVITY): selector.BooleanSelector(),
                 vol.Required(CONF_NOTIFY_ENABLED): selector.BooleanSelector(),
                 vol.Optional(CONF_NOTIFY_SERVICES): selector.SelectSelector(
                     selector.SelectSelectorConfig(
@@ -406,11 +381,15 @@ class TuerklingelOptionsFlow(OptionsFlow):
         )
         return self.async_show_form(
             step_id="init",
-            data_schema=self.add_suggested_values_to_schema(schema, user_input or current),
+            data_schema=self.add_suggested_values_to_schema(
+                schema, _without_none(user_input or current)
+            ),
             errors=errors,
             description_placeholders={
-                "webhook_url": async_get_webhook_url(
-                    self.hass, self.config_entry.data[CONF_WEBHOOK_ID]
+                "webhook_url": _webhook_hint(
+                    self.hass,
+                    entry.data[CONF_WEBHOOK_ID],
+                    bool(current.get(CONF_WEBHOOK_ENABLED)),
                 ),
                 # Wörtlich anzeigen: Der Text erklärt den Platzhalter {name}.
                 "name": "{name}",

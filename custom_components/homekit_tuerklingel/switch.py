@@ -1,4 +1,4 @@
-"""Plattform switch: mechanischen Gong ein-/ausschalten."""
+"""Plattform switch: mechanischen Gong ein-/ausschalten (nur mit Gong-Schalter)."""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import STATE_OFF, STATE_ON
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DEFAULT_GONG_ENABLED, KEY_GONG
+from .const import DEFAULT_GONG_ENABLED, DOMAIN, KEY_GONG
 from .entity import TuerklingelEntity
 from .hub import TuerklingelHub
 
@@ -25,8 +26,20 @@ async def async_setup_entry(
     entry: TuerklingelConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Schalter anlegen."""
-    async_add_entities([GongSwitch(entry.runtime_data)])
+    """Schalter nur anlegen, wenn ein Gong-Schalter konfiguriert ist."""
+    hub = entry.runtime_data
+    if hub.gong_entity_id is None:
+        async_remove_stale_entity(hass, "switch", f"{entry.entry_id}_{KEY_GONG}")
+        return
+    async_add_entities([GongSwitch(hub)])
+
+
+@callback
+def async_remove_stale_entity(hass: HomeAssistant, platform: str, unique_id: str) -> None:
+    """Verwaisten Registry-Eintrag entfernen (z. B. nachdem der Gong abgewählt wurde)."""
+    ent_reg = er.async_get(hass)
+    if entity_id := ent_reg.async_get_entity_id(platform, DOMAIN, unique_id):
+        ent_reg.async_remove(entity_id)
 
 
 class GongSwitch(TuerklingelEntity, SwitchEntity, RestoreEntity):

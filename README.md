@@ -1,234 +1,309 @@
-# HomeKit Türklingel
+# HomeKit Türklingel – HomeKit video doorbell for Home Assistant
 
-Home-Assistant-Integration, die eine klassische 2-Draht-Klingel mit einem **Shelly 1 (Gen1)** und einer
-vorhandenen Kamera (z. B. **Reolink**) zu einer **HomeKit-Video-Türklingel** macht – über die
-HomeKit Bridge von Home Assistant, ohne Homebridge, ohne eigenen HomeKit-Server und ohne Cloud.
+**English** · [Deutsch](README.de.md)
 
-Sie ersetzt das Homebridge-Plugin `homebridge-shelly-doorbell`.
+A Home Assistant custom integration that turns **any doorbell button** plus **any camera** into a
+**HomeKit video doorbell** – through Home Assistant's built-in HomeKit Bridge. No Homebridge, no
+separate HomeKit server, no cloud.
+
+The doorbell button can be anything that can call a URL (Shelly, ESPHome, Tasmota, scripts) or
+anything that already exists as an entity in Home Assistant (Shelly, ESPHome, Zigbee, MQTT, …).
+An existing mechanical chime can optionally be driven by any `switch` entity and muted at any time.
 
 > [!IMPORTANT]
-> **Teststand 0.1.1:** Einrichtung, Webhook, IP-Filter, Entprellung, Entitäten und Proxy-Kamera
-> sind in einem echten Home Assistant mit echtem Shelly 1 und Reolink-Kamera geprüft. Noch **nicht**
-> geprüft: Gong-Impuls am echten Relais, HomeKit-Pairing, Klingeln auf HomePods, Push.
-> Siehe [Teststand](#teststand).
+> **Test status 0.2.0:** Not everything described here has been tested on real hardware. Webhook,
+> IP filter, debouncing, entities and the proxy camera were tested in a real Home Assistant with
+> version 0.1.1. The new 0.2.0 features (entity triggers, chime via `switch`, migration from 0.1.x)
+> are covered by automated tests only so far. **Never** tested for real: HomeKit pairing, HomePods,
+> push notification, chime pulse on a real relay. See [Test status](#test-status).
 
 ---
 
-## Inhalt
+## Contents
 
-- [So funktioniert es](#so-funktioniert-es)
-- [Funktionen und Entitäten](#funktionen-und-entitäten)
-- [Voraussetzungen](#voraussetzungen)
+- [Purpose and how it works](#purpose-and-how-it-works)
+- [Features and entities](#features-and-entities)
+- [Requirements](#requirements)
 - [Installation](#installation)
-- [Einrichtung in Home Assistant](#einrichtung-in-home-assistant)
-- [Shelly 1 (Gen1) einrichten](#shelly-1-gen1-einrichten)
-- [HomeKit koppeln](#homekit-koppeln)
-- [Kamera-Empfehlung (Reolink)](#kamera-empfehlung-reolink)
-- [Push-Benachrichtigung](#push-benachrichtigung)
-- [Diagnose und Debug-Protokoll](#diagnose-und-debug-protokoll)
-- [Fehlersuche](#fehlersuche)
-- [Umstieg von homebridge-shelly-doorbell](#umstieg-von-homebridge-shelly-doorbell)
-- [Entwicklung und Tests](#entwicklung-und-tests)
-- [Teststand](#teststand)
-- [Lizenz](#lizenz)
+- [Setup in Home Assistant](#setup-in-home-assistant)
+- [Trigger examples](#trigger-examples)
+- [Mechanical chime](#mechanical-chime)
+- [HomeKit pairing](#homekit-pairing)
+- [Camera recommendations](#camera-recommendations)
+- [Push notification](#push-notification)
+- [Diagnostics and debug logging](#diagnostics-and-debug-logging)
+- [Troubleshooting](#troubleshooting)
+- [Upgrading from 0.1.x](#upgrading-from-01x)
+- [Migrating from homebridge-shelly-doorbell](#migrating-from-homebridge-shelly-doorbell)
+- [Development and tests](#development-and-tests)
+- [Test status](#test-status)
+- [License](#license)
 
 ---
 
-## So funktioniert es
+## Purpose and how it works
 
 ```
-Klingeltaster ──► Shelly 1 (Eingang SW, „Detached Switch“)
-                     │  HTTP-GET (I/O URL action) im LAN
-                     ▼
-              Home Assistant ── Webhook ──► Klingel-Event (doorbell)
-                     │                         │
-                     │                         ├─► HomeKit: Klingelton auf HomePods, Mitteilung mit Kamerabild
-                     │                         ├─► Snapshot „Letztes Klingeln“, optional Push
-                     │                         └─► Relais-Impuls ──► mechanischer Gong (stummschaltbar)
-                     ▼
-              Proxy-Kamera (reicht die gewählte Kamera durch)
+Doorbell button ──► any device / entity
+                      │
+       ┌──────────────┴───────────────┐
+       │ (a) Webhook GET/POST (LAN)    │ (b) HA entity changes
+       │     Shelly, ESPHome, Tasmota, │     binary_sensor / input_boolean → "on"
+       │     scripts …                 │     event / button / input_button → every event
+       └──────────────┬───────────────┘
+                      ▼
+               Home Assistant ── debouncing ──► Doorbell event (device class doorbell)
+                      │                              │
+                      │                              ├─► HomeKit: chime on HomePods, notification with camera image
+                      │                              ├─► Snapshot "Last ring", optional push
+                      │                              └─► optional: switch pulse ──► mechanical chime (can be muted)
+                      ▼
+               Proxy camera (passes the chosen camera through, on the doorbell device)
 ```
 
-1. Der Klingeltaster hängt am Eingang des Shelly 1. Weil der Eingang **entkoppelt** ist („Detached
-   Switch“), schaltet der Taster das Relais nicht mehr direkt.
-2. Beim Drücken ruft der Shelly per **I/O URL action** eine Webhook-URL von Home Assistant auf
-   (nur HTTP, nur im lokalen Netz, auf Wunsch nur von der Shelly-IP).
-3. Die Integration löst ein **Event mit Geräteklasse `doorbell`** aus, nimmt ein Standbild auf und
-   lässt – sofern eingeschaltet – über das Shelly-Relais den **mechanischen Gong** kurz anschlagen.
-4. Die Integration legt eine **Proxy-Kamera** auf demselben Gerät an. Wird diese Kamera als eigenes
-   HomeKit-Zubehör (Modus *accessory*) exportiert, verknüpft die HomeKit Bridge das Klingel-Event
-   automatisch als Türklingel (`linked_doorbell_sensor`) – HomeKit sieht dann eine Video-Türklingel.
+1. A button press reaches the integration either as a **webhook call** (GET or POST, local network
+   only) or as a **state change of an existing entity**. Both can be combined.
+2. A **debounce time** discards repeated rings within a few seconds (multiple presses, contact bounce,
+   two triggers for the same press).
+3. The integration fires an **event entity with device class `doorbell`**, stores a snapshot and – if
+   configured and not muted – switches the **chime switch** on for the set pulse duration.
+4. The integration creates a **proxy camera** on the same device. When this camera is exported to
+   HomeKit as its own accessory (mode *accessory*), the HomeKit Bridge automatically links the
+   doorbell event of the same device (`linked_doorbell_sensor`) – HomeKit then shows a video
+   doorbell.
 
-## Funktionen und Entitäten
+## Features and entities
 
-Pro eingerichteter Klingel entsteht ein Gerät mit diesen Entitäten:
+Each configured doorbell becomes one device with these entities (English names; German in brackets):
 
-| Entität | Typ | Bedeutung |
+| Entity | Type | Meaning |
 |---|---|---|
-| Klingel | `event` (Geräteklasse `doorbell`) | Wird bei jedem (entprellten) Klingeln ausgelöst. Diese Entität verknüpft HomeKit als Türklingel. |
-| Klingelt | `binary_sensor` | Geht beim Klingeln an und nach einstellbarer Zeit (Standard 5 s) automatisch aus. Praktisch für Automationen und als Rückfall-Sensor. |
-| Mechanischer Gong | `switch` | An = beim Klingeln schaltet das Shelly-Relais kurz und der vorhandene Gong läutet. Aus = Gong stumm (z. B. nachts oder wenn das Baby schläft). |
-| Entprellzeit | `number` (0–60 s, Standard 3 s) | Weiteres Klingeln innerhalb dieser Zeit wird verworfen (Mehrfachdrücken, Kontaktprellen). |
-| Gong-Dauer | `number` (0,2–10 s, Standard 1 s) | Wie lange das Relais beim Klingeln anzieht. |
-| Letztes Klingeln | `image` | Standbild der Kamera vom letzten Klingeln. |
-| Zuletzt geklingelt | `sensor` (Zeitstempel) | Zeitpunkt des letzten Klingelns. |
-| Shelly erreichbar | `binary_sensor` (optional) | Prüft jede Minute, ob der Shelly antwortet. Abschaltbar in den Optionen. |
-| Kamera | `camera` | Proxy der gewählten Kamera (Bild und Stream werden durchgereicht). Diese Kamera wird in HomeKit exportiert. |
+| Doorbell (Klingel) | `event` (device class `doorbell`) | Fired on every (debounced) ring. HomeKit links this entity as the doorbell. |
+| Ringing (Klingelt) | `binary_sensor` | Turns on when it rings and off automatically after a configurable time (default 5 s). Handy for automations. |
+| Last rung (Zuletzt geklingelt) | `sensor` (timestamp) | Time of the last ring. |
+| Last ring (Letztes Klingeln) | `image` | Camera snapshot taken at the last ring. |
+| Camera (Kamera) | `camera` | Proxy of the chosen camera (image and stream are passed through). This camera is exported to HomeKit. |
+| Debounce time (Entprellzeit) | `number` (0–60 s, default 3 s) | Further rings within this time are discarded. |
+| Mechanical chime (Mechanischer Gong) | `switch` | Only if a chime switch is selected. On = the chime rings; off = chime muted (e.g. at night). |
+| Chime duration (Gong-Dauer) | `number` (0.2–10 s, default 1 s) | Only if a chime switch is selected. How long the chime switch stays on per ring. |
 
-Weitere Bestandteile:
+Also included:
 
-- **Reparatur-Hinweis „HomeKit-Türklingel anlegen“:** bietet an, das HomeKit-Zubehör für die
-  Proxy-Kamera automatisch anzulegen (über den Zubehör-Ablauf der HomeKit Bridge).
-- **Reparatur-Hinweis „Shelly-Eingang ist nicht entkoppelt“:** erscheint, wenn am Shelly nicht
-  „Detached Switch“ eingestellt ist – dann könnte der Gong nicht stumm geschaltet werden.
-- **Optionale Push-Benachrichtigung** mit Snapshot an beliebige `notify`-Dienste.
-- **Diagnose-Download** (Zugangsdaten werden unkenntlich gemacht) und ausführliches Debug-Protokoll.
-- **Webhook-Schutz:** nur aus dem lokalen Netz (`local_only`), standardmäßig nur von der IP des Shelly.
-- **Erneute Anmeldung (Reauth)**, wenn der Shelly die gespeicherten Zugangsdaten ablehnt, und
-  **Ändern der Klingel** (IP, Zugangsdaten, Kamera) ohne Neuanlage.
+- **Triggers (combinable):** webhook (GET/POST, `local_only`, optionally only from allowed source IPs
+  or host names) and/or Home Assistant entities (`binary_sensor`, `input_boolean`, `event`,
+  `button`, `input_button`).
+- **Repair issue "Create HomeKit doorbell"**: offers to create the HomeKit accessory for the proxy
+  camera (mode *accessory*, video codec `copy`).
+- **Repair issue "Select chime switch"**: only after upgrading from 0.1.x if no chime switch could be
+  taken over automatically.
+- **Optional push notification** with snapshot to any `notify` services.
+- **Diagnostics download** (secrets redacted) and detailed debug log (source, latency).
 
-Nicht enthalten: kein eigener HomeKit-Server (HAP), keine Cloud, kein Homebridge.
+Not included: no own HomeKit server (HAP), no cloud, no Homebridge, no direct device protocol – the
+integration does not talk to any doorbell hardware itself.
 
-## Voraussetzungen
+## Requirements
 
-- **Home Assistant 2025.6.0 oder neuer** (Mindestversion in `hacs.json`).
-  Begründung: Die Integration nutzt `AddConfigEntryEntitiesCallback` (seit 2025.2),
-  typisierte `ConfigEntry[...]`-Laufzeitdaten und die Verknüpfung von **Event**-Entitäten als
-  HomeKit-Türklingel (seit 2024.9). 2025.6.0 lässt Abstand zu diesen Grenzen.
-  Das eigene Integrations-Icon zeigt Home Assistant erst **ab 2026.3** an (lokale Brand-Bilder);
-  ältere Versionen zeigen ein Platzhalter-Icon.
-  Automatisch getestet wird gegen **Home Assistant 2026.10.4**; ältere Versionen sind nicht geprüft.
-- Integration **HomeKit Bridge** (in Home Assistant enthalten) und ein Apple-Home-Zuhause mit
-  Steuerzentrale (HomePod oder Apple TV) für Mitteilungen und Klingelton.
-- **Shelly 1 der ersten Generation (Gen1)** mit Firmware, die *I/O URL actions* anbietet, und einer
-  **festen IP-Adresse** im LAN.
-- Eine Kamera-Entität in Home Assistant (z. B. aus der Reolink-Integration).
-- Home Assistant muss für den Shelly per **HTTP** im LAN erreichbar sein (siehe unten).
+- **Home Assistant 2025.6.0 or newer** (minimum in `hacs.json`). Automated tests run against
+  Home Assistant 2026.10.4; the real-world tests used 2026.11.1. Older versions are not tested.
+  The integration icon (local brand images) is only shown from Home Assistant 2026.3 on.
+- The **HomeKit Bridge** integration (built into Home Assistant) and an Apple Home with a home hub
+  (HomePod or Apple TV) for notifications and the doorbell chime.
+- A **camera entity** in Home Assistant (e.g. from the Reolink integration), ideally with an H.264
+  stream.
+- A **doorbell button** that either
+  - can call an HTTP URL in the local network (webhook), or
+  - already exists as an entity in Home Assistant.
+- Optional: a `switch` entity that drives the mechanical chime.
 
 ## Installation
 
-### Über HACS (benutzerdefiniertes Repository)
+### HACS (custom repository)
 
-1. HACS öffnen → Menü (⋮) oben rechts → **Benutzerdefinierte Repositories**.
-2. Repository `https://github.com/rolhan95/homekit-tuerklingel`, Typ **Integration**, hinzufügen.
-3. „HomeKit Türklingel“ suchen und **Herunterladen**.
-4. Home Assistant **neu starten**.
+1. Open HACS → menu (⋮) top right → **Custom repositories**.
+2. Add repository `https://github.com/rolhan95/homekit-tuerklingel`, type **Integration**.
+3. Search for "HomeKit Türklingel" and **Download**.
+4. If Home Assistant asks for a restart, restart it. (On Home Assistant 2026.11.1 the integration
+   could be added right after downloading, without a restart.)
 
-### Manuell
+### Manual
 
-1. Den Ordner `custom_components/homekit_tuerklingel` aus diesem Repository in das Verzeichnis
-   `config/custom_components/` von Home Assistant kopieren
-   (Ergebnis: `config/custom_components/homekit_tuerklingel/manifest.json`).
-2. Home Assistant **neu starten**.
+1. Copy the folder `custom_components/homekit_tuerklingel` from this repository into the
+   `config/custom_components/` folder of Home Assistant
+   (result: `config/custom_components/homekit_tuerklingel/manifest.json`).
+2. Restart Home Assistant.
 
-## Einrichtung in Home Assistant
+## Setup in Home Assistant
 
-**Einstellungen → Geräte & Dienste → Integration hinzufügen → „HomeKit Türklingel“.**
+**Settings → Devices & services → Add integration → "HomeKit Türklingel".**
 
-1. **Türklingel einrichten**
-   - *Name der Klingel*, z. B. „Haustür“ – wird Gerätename und Name in HomeKit.
-   - *IP-Adresse des Shelly*, z. B. `192.168.1.50`. Die Integration prüft, ob unter dieser Adresse ein
-     Shelly Gen1 antwortet.
-   - *Benutzername/Kennwort* nur angeben, wenn am Shelly „Restrict Login“ aktiv ist.
-2. **Kamera wählen** – die Kamera, deren Bild an der Tür gezeigt werden soll. Ist der Shelly-Eingang
-   noch nicht entkoppelt, steht hier zusätzlich ein Hinweis.
-3. **Fertig** – die Abschlussmeldung zeigt die **Webhook-URL** für den Shelly. Die URL steht später
-   jederzeit in den **Optionen** der Klingel (Zahnrad am Integrationseintrag → *Konfigurieren*).
+The first page asks for name, camera, "Accept rings via webhook", trigger entities and chime switch. If the webhook is enabled, a second page asks whether to accept it only from specific devices.
 
-Optionen (nachträglich änderbar):
+1. **Name** – e.g. "Front door". Used as device name and as name in HomeKit.
+2. **Camera** – the camera whose image should be shown at the door. The integration passes it through
+   via its own proxy camera.
+3. **Triggers** – choose one or both:
+   - **Webhook**: the doorbell device calls a URL. Optionally restrict it to **allowed sources**
+     (IP addresses or host names, e.g. the IP of your Shelly). Calls from other addresses are
+     rejected with HTTP 403. Host names are resolved once when the doorbell is loaded; after an IP
+     change reload the doorbell.
+   - **Entities**: one or more existing entities. `binary_sensor`/`input_boolean` ring when they
+     change to "on"; `event`/`button`/`input_button` ring on every new event or press.
+4. **Chime (optional)** – a `switch` entity that drives the mechanical chime. Leave empty if you have
+   no chime or it should not be driven by Home Assistant.
+5. **Done** – if the webhook is enabled, the final message shows the **webhook URL**. You can find it
+   again at any time in the doorbell's **options** (cog on the integration entry → *Configure*).
 
-| Option | Standard | Bedeutung |
-|---|---|---|
-| Webhook nur von der Shelly-IP annehmen | an | Aufrufe von anderen Adressen werden mit 403 abgewiesen. |
-| Abweichende erlaubte IP | leer | Falls der Aufruf über eine andere Adresse kommt (z. B. Reverse-Proxy). Leer = Shelly-IP. |
-| „Klingelt“ ausschalten nach | 5 s | Auto-Aus des Binärsensors „Klingelt“. |
-| Erreichbarkeit des Shelly überwachen | an | Legt „Shelly erreichbar“ an und fragt jede Minute ab. |
-| Zusätzliche Push-Benachrichtigung | aus | Siehe [Push-Benachrichtigung](#push-benachrichtigung). |
+All settings (triggers, allowed sources, chime switch, "Ringing" auto-off time, push) can be
+changed later in the options.
 
-## Shelly 1 (Gen1) einrichten
+**Why local network only?** The webhook is registered `local_only`: Home Assistant accepts it only
+from the local network, never via the external/cloud URL. Many devices (e.g. Shelly Gen1) can only
+call plain HTTP, so the URL uses Home Assistant's **internal** address, e.g.
+`http://192.168.1.10:8123/api/webhook/<webhook-id>`. The webhook ID is random and long – treat the
+URL like a password. If possible, also enable the source filter.
 
-Alle Einstellungen in der Weboberfläche des Shelly (`http://<Shelly-IP>/`):
+## Trigger examples
 
-1. **Feste IP-Adresse:** *Internet & Security → WiFi Mode – Client → Set static IP address*
-   oder besser eine **DHCP-Reservierung** im Router. Der Webhook-Filter und das Schalten des Gongs
-   hängen an dieser Adresse.
-2. **Eingang entkoppeln:** *Settings → Button Type → **Detached Switch*** → Speichern.
-   Nur so schaltet der Taster das Relais nicht mehr selbst, und der Schalter „Mechanischer Gong“ kann
-   den Gong stumm schalten. (Ist das nicht eingestellt, meldet die Integration einen
-   Reparatur-Hinweis.)
-3. **Webhook eintragen:** *I/O URL actions → **BUTTON SWITCHED ON URL***
-   - Die Webhook-URL aus Home Assistant einfügen, z. B.
-     `http://192.168.1.10:8123/api/webhook/<webhook-id>`
-   - Das Häkchen zum **Aktivieren** setzen und **Speichern**.
-4. **Zugangsschutz (empfohlen):** *Internet & Security → **Restrict Login*** → Benutzer und Kennwort
-   setzen. Dieselben Daten in Home Assistant bei der Klingel eintragen – damit darf nur Home Assistant
-   das Relais (den Gong) schalten.
-5. **Gong anschließen:** Der mechanische Gong hängt am Relais-Ausgang des Shelly 1 (potentialfreier
-   Kontakt, Klingeltrafo-Kreis). Arbeiten an Netzspannung nur durch eine Elektrofachkraft.
+> [!NOTE]
+> The webhook itself was tested with real GET and POST calls (with 0.1.1). The device configurations
+> below follow the respective manufacturer documentation; none of them has been tested by the author
+> with a real device yet. Replace `192.168.1.10:8123` and `<webhook-id>` with the URL from the options.
 
-**Warum nur HTTP im LAN?** Shelly-Geräte der ersten Generation können URL-Aktionen nur unverschlüsselt
-per HTTP aufrufen. Der Webhook wird deshalb ausschließlich aus dem lokalen Netz angenommen
-(`local_only`) und standardmäßig nur von der Shelly-IP. Die Webhook-ID ist zufällig und lang.
-Die URL muss die **interne** HTTP-Adresse von Home Assistant enthalten – keine externe/Cloud-Adresse
-und kein HTTPS. Läuft Home Assistant ausschließlich mit HTTPS, kann ein Gen1-Shelly es nicht aufrufen.
+### Shelly Gen1 (e.g. Shelly 1) – I/O URL action
 
-## HomeKit koppeln
+In the Shelly web UI (`http://<shelly-ip>/`):
 
-HomeKit zeigt eine Video-Türklingel nur, wenn **Kamera und Klingel im selben Zubehör** stecken. Dazu muss
-die **Proxy-Kamera dieser Integration** als **eigenes HomeKit-Zubehör (Modus „accessory“)** exportiert
-werden. Die HomeKit Bridge findet das Klingel-Event auf demselben Gerät dann automatisch.
+1. *Settings → Button Type → **Detached Switch*** – so the button no longer switches the relay
+   itself (needed if the relay drives the chime and should be mutable).
+2. *I/O URL actions → **BUTTON SWITCHED ON URL*** → paste the webhook URL, tick **enabled**, save.
+3. Give the Shelly a fixed IP (DHCP reservation) and enter this IP as allowed source.
 
-### Weg 1: Reparatur-Hinweis (empfohlen)
+### Shelly Gen2/Plus/Pro – Actions / Webhooks
 
-1. **Einstellungen → System → Reparaturen** → „HomeKit-Türklingel für *Name* anlegen“ öffnen.
-2. Bestätigen. Es wird ein neuer HomeKit-Bridge-Eintrag im Modus *accessory* für die Proxy-Kamera
-   angelegt (Video-Codec `copy` setzt die HomeKit Bridge dabei automatisch).
-3. In Home Assistant erscheint die Benachrichtigung **„HomeKit Pairing“** mit QR-Code und
-   8-stelligem Code.
-4. iPhone: **Home-App → + → Gerät hinzufügen** → QR-Code scannen oder *Weitere Optionen* → Code
-   eingeben.
+In the Shelly web UI: **Actions** (newer firmware: **Webhooks**) → *Create* → as condition the input
+event, e.g. *Input 0 – button pushed* (input type Button) or *switched on* (input type Switch) → as
+action **URL** = the webhook URL → save. Set the input/output mode to **Detached** if the relay drives
+the chime.
 
-### Weg 2: manuell
+### ESPHome – `http_request` on press
 
-1. **Einstellungen → Geräte & Dienste → Integration hinzufügen → HomeKit Bridge** – eine **neue**
-   Bridge anlegen (beliebige Domain wählen, wird gleich umgestellt).
-2. Beim neuen Eintrag **Konfigurieren** → *Modus* = **accessory** → als Entität die **Kamera dieser
-   Klingel** wählen (z. B. `camera.haustur_kamera`, nicht die Original-Reolink-Kamera).
-3. Im Kamera-Schritt „Video-Codec kopieren“ für die Kamera ankreuzen (siehe Empfehlung unten).
-4. Mit dem Code aus der Benachrichtigung „HomeKit Pairing“ in der Home-App koppeln.
+```yaml
+http_request:
+  timeout: 3s
+
+binary_sensor:
+  - platform: gpio
+    name: "Doorbell button"
+    pin:
+      number: GPIO4
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 20ms
+    on_press:
+      - http_request.get:
+          url: "http://192.168.1.10:8123/api/webhook/<webhook-id>"
+```
+
+If the ESPHome device is already added to Home Assistant, you can instead select its
+`binary_sensor` directly as an **entity trigger** – no webhook needed.
+
+### Tasmota – rule with WebSend
+
+In the Tasmota console:
+
+```
+Rule1 ON Switch1#State=1 DO WebSend [192.168.1.10:8123] /api/webhook/<webhook-id> ENDON
+Rule1 1
+```
+
+`WebSend` sends an HTTP GET. Depending on the switch mode a rule on `Switch1#State` may stop the switch
+from toggling the relay – check the Tasmota documentation (`SwitchMode`, `SetOption114`) if the relay
+should drive the chime separately.
+
+### Alternative: entity from an existing integration
+
+Instead of a webhook, use the entity that an integration already provides, for example:
+
+- **Shelly integration**: the input of the Shelly (Gen1: `binary_sensor` "Input", possibly disabled by
+  default – enable it in the entity settings; Gen2+: `event` entity of the input in button mode).
+- **Zigbee (ZHA/Zigbee2MQTT)** buttons or contacts, **MQTT** `binary_sensor`s, **ESPHome**
+  `binary_sensor`s, or a helper `input_button`.
+
+Note: a `binary_sensor` that becomes "on" coming from *unavailable* or *unknown* (e.g. after a
+restart) does not ring. The webhook is usually the fastest path, because it does not depend on the
+update rate of another integration.
+
+## Mechanical chime
+
+- Select any **`switch` entity** as chime switch (e.g. the relay of a Shelly in the Shelly
+  integration). On every ring it is switched **on for the chime duration** and then **off** again.
+  Overlapping pulses are not started twice.
+- The switch **"Mechanical chime"** mutes the chime (e.g. at night); the **"Chime duration"** number
+  sets the pulse length (0.2–10 s). Both entities only exist if a chime switch is selected.
+- **Important:** muting only works if the **button does not switch the relay directly**. On a Shelly
+  set the input to **"Detached"** (Gen1: *Button Type → Detached Switch*; Gen2+: *Input/Output
+  settings → Detached*). Otherwise the chime rings by hardware, regardless of Home Assistant.
+- Wiring the chime (bell transformer, relay contact) is outside the scope of this integration. Work on
+  mains voltage must only be done by a qualified electrician.
+
+## HomeKit pairing
+
+HomeKit only shows a video doorbell if **camera and doorbell are in the same accessory**. For this the
+**proxy camera of this integration** must be exported as **its own HomeKit accessory (mode
+"accessory")**. The HomeKit Bridge then finds the doorbell event on the same device automatically.
+
+### Option 1: repair issue (recommended)
+
+1. **Settings → System → Repairs** → open "Create HomeKit doorbell for *name*".
+2. Confirm. A new HomeKit Bridge entry in mode *accessory* is created for the proxy camera (video
+   codec `copy`).
+3. Home Assistant shows the notification **"HomeKit Pairing"** with QR code and 8-digit code.
+4. iPhone: **Home app → + → Add Accessory** → scan the QR code or *More options* → enter the code.
+
+### Option 2: manual
+
+1. **Settings → Devices & services → Add integration → HomeKit Bridge** – create a **new** bridge (any
+   domain, it is changed in the next step).
+2. **Configure** the new entry → *Mode* = **accessory** → select the **camera of this doorbell** (e.g.
+   `camera.front_door_camera`, not the original camera).
+3. In the camera step tick "copy video codec" for the camera (see recommendations below).
+4. Pair it in the Home app with the code from the "HomeKit Pairing" notification.
 
 > [!WARNING]
-> Die Proxy-Kamera **nicht zusätzlich** in eine bestehende HomeKit Bridge (Modus *bridge*)
-> aufnehmen. Kameras in einer Bridge zeigen keinen Türklingel-Dienst zuverlässig, und das Gerät
-> taucht doppelt in der Home-App auf. Die Original-Kamera sollte in HomeKit ebenfalls nicht doppelt
-> exportiert werden.
+> Do **not** additionally add the proxy camera to an existing HomeKit Bridge (mode *bridge*). Cameras
+> inside a bridge do not reliably show the doorbell service, and the device would appear twice in the
+> Home app. Do not export the original camera to HomeKit as well.
 
-## Kamera-Empfehlung (Reolink)
+## Camera recommendations
 
-- In der Reolink-Integration den **Sub-** bzw. **Fluent-Stream** verwenden und ihn in der Kamera auf
-  **H.264** stellen (nicht H.265). HomeKit kann nur H.264 empfangen.
-- **Video-Codec `copy`** (setzt der Zubehör-Ablauf aus dem Reparatur-Hinweis automatisch): Der Stream
-  wird ohne Umrechnung weitergegeben – geringe Last und kurze Verzögerung.
-- **Audio** ist optional: In den Optionen des HomeKit-Eintrags *Audio unterstützen* (`support_audio`)
-  einschalten. Der Ton wird dann umgewandelt (transkodiert), was etwas Rechenleistung kostet.
+- Use an **H.264** stream – HomeKit can only receive H.264. For Reolink use the **sub** or **fluent**
+  stream and set it to H.264 in the camera (not H.265).
+- **Video codec `copy`** (set automatically by the repair issue): the stream is passed through
+  unchanged – low load and short delay. Only works with H.264.
+- If your camera only delivers **H.265**, choose **`libx264`** as video codec in the options of the
+  HomeKit entry. The stream is then transcoded, which costs considerable CPU.
+- **Audio** is optional: enable *Support audio* (`support_audio`) in the options of the HomeKit entry.
+  Audio is transcoded, which costs some CPU.
 
-## Push-Benachrichtigung
+## Push notification
 
-Zusätzlich zur HomeKit-Mitteilung kann die Integration eine Push-Nachricht senden:
+In addition to the HomeKit notification the integration can send a push message:
 
-1. Optionen der Klingel → *Zusätzliche Push-Benachrichtigung senden* einschalten.
-2. *Benachrichtigungsdienste*: einen oder mehrere `notify`-Dienste, z. B. `mobile_app_iphone`.
-3. *Titel* und *Text* anpassen; `{name}` wird durch den Namen der Klingel ersetzt.
+1. Doorbell options → enable *additional push notification*.
+2. *Notification services*: one or more `notify` services, e.g. `mobile_app_iphone`.
+3. Adjust *title* and *message*; `{name}` is replaced with the doorbell name.
 
-Die Nachricht enthält den Snapshot als Bild (über die Entität „Letztes Klingeln“), ist bei der
-Companion-App als *zeitkritisch* markiert und ersetzt die vorige Mitteilung derselben Klingel.
+The message contains the snapshot as image (via the "Last ring" entity), is marked *time-sensitive*
+for the Companion app and replaces the previous notification of the same doorbell.
 
-## Diagnose und Debug-Protokoll
+## Diagnostics and debug logging
 
-- **Diagnose:** Gerät bzw. Integrationseintrag → ⋮ → **Diagnose herunterladen**. Enthält Einstellungen
-  (Kennwort und Webhook-ID unkenntlich), Zähler (Webhook-Aufrufe, Klingeln, entprellt, abgelehnte IPs,
-  Gong-Impulse und -Fehler, Snapshot- und Push-Fehler) und den letzten Webhook-Aufruf.
-- **Debug-Protokoll** in `configuration.yaml`:
+- **Diagnostics:** device or integration entry → ⋮ → **Download diagnostics**. Contains the settings
+  (webhook ID redacted), counters (webhook calls, entity triggers, rings, debounced, rejected IPs, chime
+  pulses and errors, snapshot and push errors) and the last trigger.
+- **Debug log:** integration entry → ⋮ → *Enable debug logging*, or in `configuration.yaml`:
 
   ```yaml
   logger:
@@ -237,35 +312,54 @@ Companion-App als *zeitkritisch* markiert und ersetzt die vorige Mitteilung ders
       custom_components.homekit_tuerklingel: debug
   ```
 
-  Alternativ: Integrationseintrag → ⋮ → *Debug-Protokollierung aktivieren*. Das Protokoll zeigt jeden
-  Webhook-Aufruf mit **Methode und Quell-IP**, verworfene (entprellte) Aufrufe und die **Latenz**
-  vom Eingang des Webhooks bis zum ausgelösten Event in Millisekunden.
+  The log shows each trigger with its **source** (webhook method and source IP, or entity ID),
+  discarded (debounced) rings, chime pulses and the **latency** from receiving the trigger to the
+  fired event in milliseconds.
 
-## Fehlersuche
+## Troubleshooting
 
-| Problem | Ursache und Lösung |
+| Problem | Cause and solution |
 |---|---|
-| Kamera erscheint in HomeKit, aber **ohne Klingel** | Die Kamera war vorher schon ohne Klingel exportiert; HomeKit merkt sich die Dienste eines Zubehörs. Zubehör in der **Home-App entfernen**, in Home Assistant den HomeKit-Eintrag des Zubehörs **zurücksetzen** (Aktion `homekit.reset_accessory` mit der Proxy-Kamera) oder den Eintrag **löschen und neu anlegen** (z. B. über den Reparatur-Hinweis), danach **neu koppeln**. |
-| **HomePods klingeln nicht** | Home-App → Klingel-Zubehör → Einstellungen → *Mitteilungen* bzw. *Türklingel* einschalten. Prüfen, dass eine Steuerzentrale (HomePod/Apple TV) aktiv ist. Wird die Klingel gar nicht als Türklingel angezeigt, siehe erste Zeile (neu koppeln). |
-| **Webhook kommt nicht an** | URL am Shelly prüfen (interne HTTP-Adresse, Port 8123, Häkchen aktiv). Mit Debug-Protokoll prüfen: Erscheint ein Aufruf mit „abgelehnt“, stimmt die Quell-IP nicht – Shelly-IP bzw. *Abweichende erlaubte IP* korrigieren. Erscheint gar nichts, erreicht der Shelly Home Assistant nicht (HTTPS-only, Firewall, VLAN). |
-| **Gong läutet, obwohl „Mechanischer Gong“ aus ist** | Der Shelly-Eingang ist nicht entkoppelt: *Settings → Button Type → Detached Switch*. |
-| **Gong läutet nie** | Schalter „Mechanischer Gong“ an? Zugangsdaten korrekt (sonst Reparatur/erneute Anmeldung)? „Gong-Dauer“ zu kurz für den Gong? |
-| **Kein Bild / schwarzes Bild in HomeKit** | Stream auf **H.264** stellen (Sub/Fluent bei Reolink), `copy` nur mit H.264 verwenden; prüfen, ob die Original-Kamera in Home Assistant ein Bild liefert. |
-| Klingeln wird **doppelt** gemeldet | „Entprellzeit“ erhöhen. |
+| Camera appears in HomeKit but **without doorbell** | The camera was exported to HomeKit before without doorbell; HomeKit remembers the services of an accessory. **Remove** the accessory in the Home app, **reset** it in Home Assistant (action `homekit.reset_accessory` with the proxy camera) or **delete and recreate** the HomeKit entry (e.g. via the repair issue), then **pair again**. Make sure you exported the *proxy* camera, not the original. |
+| **HomePods do not chime** | Home app → doorbell accessory → settings → enable notifications/doorbell. Check that a home hub (HomePod/Apple TV) is active. If it is not shown as doorbell at all, see the first row. |
+| **Webhook does not arrive** | Check the URL on the device (internal HTTP address, port 8123, no external/cloud URL). Enable the debug log: no entry at all → the device does not reach Home Assistant (HTTPS-only setup, firewall, VLAN, wrong port). |
+| Webhook answers **403** | The source filter rejected the call. The log shows the rejected IP – add it to the allowed sources (or a host name that resolves to it) and reload the doorbell. Behind a reverse proxy Home Assistant may see the proxy's IP. |
+| **Entity trigger does not ring** | `binary_sensor`/`input_boolean` only ring on a change to "on" (not from *unavailable*/*unknown*). Check in the entity history that the state really changes. Is the debounce time too long? |
+| **Chime rings although "Mechanical chime" is off** | The button switches the relay directly. Set the input to **Detached** (Shelly: *Detached Switch*). |
+| **Chime never rings** | Is a chime switch selected and "Mechanical chime" on? Can the switch be switched manually? Is "Chime duration" too short for your chime? See the debug log for errors. |
+| **Black / no image in HomeKit** | Use an **H.264** stream; use `copy` only with H.264, otherwise `libx264`. Check that the original camera shows an image in Home Assistant. |
+| Ring is reported **twice** | Increase the "Debounce time". Webhook and entity trigger for the same button count as two triggers – the debounce time catches that. |
 
-## Umstieg von homebridge-shelly-doorbell
+## Upgrading from 0.1.x
 
-1. Diese Integration installieren und die Klingel einrichten.
-2. Am Shelly unter *I/O URL actions → BUTTON SWITCHED ON URL* die bisherige Homebridge-URL durch die
-   **Webhook-URL aus Home Assistant** ersetzen.
-3. In der Home-App das alte Homebridge-Türklingel-Zubehör **entfernen** und das Plugin in Homebridge
-   deinstallieren bzw. aus der Konfiguration nehmen.
-4. Das neue Zubehör wie unter [HomeKit koppeln](#homekit-koppeln) beschrieben anlegen und koppeln.
+Version 0.2.0 removes the direct Shelly Gen1 HTTP connection (credentials, connection test, "Shelly
+reachable", "input not detached" notice). The existing doorbell is **migrated automatically**:
 
-## Entwicklung und Tests
+- The **webhook URL stays the same** – nothing needs to change on the Shelly.
+- The source filter keeps its setting and allows the **IP of the Shelly** (or the previously set
+  deviating IP).
+- **Chime:** if the same Shelly is also added to Home Assistant's **Shelly integration**, its switch is
+  taken over as chime switch. Otherwise a repair issue **"Select chime switch"** appears: add the
+  Shelly to the Shelly integration (or use another switch) and select the switch in the doorbell's
+  options. Until then the chime is not driven.
+- The entity "Shelly reachable" and the stored Shelly credentials are removed.
 
-Die Tests nutzen [`pytest-homeassistant-custom-component`](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component)
-(Python 3.14):
+<!-- KOORDINATOR: nach dem Live-Test der Migration ergänzen, was im echten HA beobachtet wurde. -->
+
+## Migrating from homebridge-shelly-doorbell
+
+1. Install this integration and set up the doorbell (trigger: webhook; allowed source: the Shelly IP;
+   chime: the Shelly's switch from the Shelly integration, if desired).
+2. On the Shelly, replace the previous Homebridge URL under *I/O URL actions → BUTTON SWITCHED ON URL*
+   with the **webhook URL from Home Assistant**.
+3. **Remove** the old Homebridge doorbell accessory in the Home app and remove the plugin from
+   Homebridge.
+4. Create and pair the new accessory as described under [HomeKit pairing](#homekit-pairing).
+
+## Development and tests
+
+The tests use [`pytest-homeassistant-custom-component`](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component)
+with **Python 3.14**:
 
 ```bash
 python -m venv .venv
@@ -274,57 +368,56 @@ pip install -r requirements_test.txt
 pytest tests --cov=custom_components.homekit_tuerklingel --cov-report=term-missing
 ```
 
-- Die automatischen Prüfungen laufen in GitHub Actions unter **Linux** (`tests.yml`: pytest mit
-  mindestens 90 % Abdeckung; `validate.yml`: hassfest und HACS-Prüfung).
-- Unter Windows laufen die Tests lokal ebenfalls; `tests/conftest.py` hebt dafür die Socket-Sperre
-  des Test-Plugins auf. Maßgeblich ist der Lauf unter Linux.
-- Jede Änderung erhöht die Version in `custom_components/homekit_tuerklingel/manifest.json` und
-  bekommt einen Eintrag im [CHANGELOG](CHANGELOG.md).
+- The automatic checks run in GitHub Actions on **Linux** (`tests.yml`: pytest with at least 90 %
+  coverage; `validate.yml`: hassfest and HACS validation).
+- Tests also run locally on Windows; the Linux run is authoritative.
+- **The tests never use the real network:** devices, cameras, zeroconf/mDNS and the HomeKit server are
+  replaced by simulations, so a test run never announces accessories in your network.
+- Every change bumps the version in `custom_components/homekit_tuerklingel/manifest.json` and gets an
+  entry in the [CHANGELOG](CHANGELOG.md) (German).
 
-## Teststand
+## Test status
 
-Stand **0.1.1 (2026-11-13)**.
+Status **0.2.0 (2026-11-13)**.
 
-### Im echten Home Assistant getestet (HA 2026.11.1, 2026-11-13)
+### Tested in a real Home Assistant (with 0.1.1, HA 2026.11.1, Shelly 1 Gen1, Reolink)
 
-- Installation über HACS (Marketplace), Laden ohne Neustart (HA 2026.11.1)
-- Einrichtung: Verbindungstest zu einem echten Shelly 1 (Gen1, Firmware 1.14.0, ohne Anmeldung),
-  Kamerawahl (Reolink, Sub-Stream), alle Entitäten mit deutschen Namen auf einem Gerät
-- Hinweis „Eingang nicht entkoppelt“: erkennt den Eingangsmodus „action“ richtig
-- Webhook mit GET und POST (`local_only`), Event 1–2 ms nach dem Aufruf
-- IP-Filter: Aufrufe von fremder IP werden mit 403 abgelehnt; abweichende erlaubte IP greift
-- Entprellung: zweiter Aufruf innerhalb von 3 s wird verworfen
-- „Klingelt“ geht nach 5 s aus; „Zuletzt geklingelt“ und Snapshot „Letztes Klingeln“ werden gesetzt
-- Gong-Schalter „aus“: kein Relais-Aufruf
-- Proxy-Kamera liefert das Live-Bild der Reolink-Kamera (auch skaliert)
-- Erreichbarkeit „Shelly erreichbar“ zeigt „an“
+These functions still exist in 0.2.0; a live re-test with 0.2.0 is pending.
+<!-- KOORDINATOR: nach dem Live-Test mit 0.2.0 bestätigen bzw. ergänzen. -->
 
-### Durch automatische Tests geprüft (simulierter Shelly, simulierte Kamera)
+- Installation via HACS, adding without restart (HA 2026.11.1)
+- Webhook with GET and POST (`local_only`), event 1–2 ms after the call
+- Source filter: calls from a foreign IP are rejected with 403; a deviating allowed IP works
+- Debouncing: a second call within 3 s is discarded
+- Entities: "Ringing" turns off after 5 s; "Last rung" and snapshot "Last ring" are set
+- Proxy camera delivers the live image of a real Reolink camera (also scaled)
 
-116 Tests, Abdeckung 99 % (Home Assistant 2026.10.4, lokal unter Windows; Lauf unter Linux in
-GitHub Actions). Geprüft sind:
+### Covered by automated tests only (0.2.0)
 
-- Einrichtung: Verbindungstest, Fehler (nicht erreichbar, falsches Kennwort, kein Shelly Gen1,
-  doppelt), Hinweis „nicht entkoppelt“, Webhook-URL, erneute Anmeldung, nachträgliches Ändern, Optionen
-- Webhook mit GET und POST, IP-Filter (erlaubt, abgelehnt mit 403, abgeschaltet, abweichende IP)
-- Entprellung (Klingeln innerhalb der Entprellzeit wird verworfen)
-- Gong: Relais-Aufruf `/relay/0?turn=on&timer=…` mit Anmeldung, stumm, Fehler, erneute Anmeldung bei 401
-- Alle Entitäten inkl. Auto-Aus, Wiederherstellung nach Neustart, Erreichbarkeit
-- Proxy-Kamera reicht Bild und Stream-Quelle durch
-- Reparatur-Hinweise und Anlegen des HomeKit-Zubehörs mit der echten HomeKit-Integration (ohne
-  HomeKit-Server): Der Eintrag wird angelegt, `linked_doorbell_sensor` zeigt automatisch auf das
-  Klingel-Event, `video_codec` ist `copy`
-- Push-Inhalt (Titel, Text, Bild-Anhang), Diagnose mit Schwärzung
+<!-- KOORDINATOR: Anzahl Tests und Abdeckung des 0.2.0-Laufs eintragen. -->
 
-### Im Code vorhanden, im echten Home Assistant noch nicht getestet
+- Setup and options: name, camera, webhook with source filter (IP and host name), entity triggers,
+  chime switch
+- Entity triggers: `binary_sensor`/`input_boolean` on change to "on", `event`/`button`/`input_button`
+  on every event; no ring from *unavailable*/*unknown*
+- Chime via `switch`: pulse on/off, muted, errors
+- Migration from 0.1.x: webhook URL kept, allowed IP taken over, chime switch from the Shelly
+  integration or repair issue "Select chime switch"
+- Repair issue and creation of the HomeKit accessory with the real HomeKit integration (without
+  HomeKit server): `linked_doorbell_sensor` points to the doorbell event, `video_codec` is `copy`
+- Push content (title, message, image), diagnostics with redaction
 
-- Gong-Impuls am echten Shelly-Relais (insbesondere Gong-Dauer mit Nachkommastelle, z. B. `timer=0.5`)
-- Reparatur-Hinweis „HomeKit-Türklingel anlegen“ im echten Home Assistant
-- Echte Reolink-Kamera über die Proxy-Kamera, Live-Video und Snapshot in Apple Home
-- Pairing in der Home-App, Klingelton auf HomePods, Mitteilung auf iPhone/Apple Watch
-- Push-Benachrichtigung über die Companion-App
-- Integrations-Icon (lokale Brand-Bilder, ab Home Assistant 2026.3)
+### Not yet tested in a real Home Assistant
 
-## Lizenz
+- Entity triggers (Shelly, ESPHome, Zigbee, MQTT entities)
+- Chime via `switch`, mute switch and chime duration on real hardware
+- Migration of a real 0.1.x installation
+- Trigger examples with real devices (Shelly Gen1 URL action, Shelly Gen2+, ESPHome, Tasmota)
+- Repair issue "Create HomeKit doorbell" in a real Home Assistant
+- HomeKit pairing, chime on HomePods, notification on iPhone/Apple Watch, live video in Apple Home
+- Push notification via the Companion app
+- Integration icon (local brand images, from Home Assistant 2026.3)
+
+## License
 
 [MIT](LICENSE) – © 2026 rolhan95

@@ -3,112 +3,89 @@
     "step": {
       "user": {
         "title": "Set up doorbell",
-        "description": "Doorbell button: Shelly 1 (Gen1). The Shelly reports a ring via webhook; its relay drives the mechanical chime. Only enter username and password if login protection (Restrict login) is enabled on the Shelly.",
+        "description": "A doorbell combines a doorbell trigger with a camera so that HomeKit recognises both as one video doorbell. The trigger can be a webhook (HTTP call from the LAN) and/or any Home Assistant entity. A mechanical chime can optionally be driven by a switch entity.",
         "data": {
           "name": "Doorbell name",
-          "shelly_host": "IP address or hostname of the Shelly",
-          "shelly_username": "Username (optional)",
-          "shelly_password": "Password (optional)"
+          "camera_entity": "Camera",
+          "webhook_enabled": "Accept rings via webhook",
+          "trigger_entities": "Trigger entities (optional)",
+          "gong_entity": "Chime switch (optional)"
         },
         "data_description": {
-          "name": "Used as device name and shown in HomeKit, e.g. \"Front door\".",
-          "shelly_host": "Static IP address or hostname in the LAN, e.g. 192.168.1.50. The Shelly must be reachable (connection test).",
-          "shelly_username": "Leave empty if no login is configured on the Shelly.",
-          "shelly_password": "Password of the Shelly login; leave empty if no login is configured."
+          "name": "Shown as device name and in HomeKit, e.g. \"Front door\".",
+          "camera_entity": "Camera entity whose picture HomeKit shows when the doorbell rings. Each camera can belong to only one doorbell.",
+          "webhook_enabled": "The doorbell button calls a Home Assistant webhook URL when pressed (GET or POST, LAN only). The URL is shown in the next step.",
+          "trigger_entities": "Binary sensors and input_boolean ring when they turn on; event, button and input_button entities ring on every new event or press.",
+          "gong_entity": "Switch entity that is turned on for the configured chime duration when the doorbell rings, e.g. a relay. Leave empty if no chime should be driven."
         }
       },
-      "camera": {
-        "title": "Select camera",
-        "description": "The camera is passed through a dedicated camera entity of this doorbell so that HomeKit recognizes camera and button as one video doorbell. Recommendation for Reolink: sub or fluent stream in H.264.{detached_hint}",
+      "webhook": {
+        "title": "Webhook",
+        "description": "**Webhook URL:**\n`{webhook_url}`\n\nEnter this URL in the doorbell button as the action on press. Any device that calls an HTTP address when the button is pressed works, e.g. Shelly Gen1 (\"I/O URL actions\"), Shelly Gen2 and newer (\"Actions\" or \"Webhooks\"), ESPHome (http_request) or Tasmota (WebSend). HTTP on the local network only; the webhook cannot be reached from the internet. The URL is also shown later in the doorbell options.",
         "data": {
-          "camera_entity": "Camera"
+          "restrict_ip": "Accept webhook only from specific devices",
+          "allowed_sources": "Allowed devices (IP addresses or host names)"
         },
         "data_description": {
-          "camera_entity": "Camera entity whose picture HomeKit shows when someone rings, e.g. from Reolink."
-        }
-      },
-      "reauth_confirm": {
-        "title": "Renew Shelly credentials",
-        "description": "The Shelly {host} rejects the stored credentials. Please enter the credentials configured on the Shelly under *Settings → Restrict login*.",
-        "data": {
-          "shelly_username": "Username",
-          "shelly_password": "Password"
-        },
-        "data_description": {
-          "shelly_username": "Leave empty if login has since been disabled on the Shelly.",
-          "shelly_password": "Password of the Shelly login."
-        }
-      },
-      "reconfigure": {
-        "title": "Change doorbell",
-        "data": {
-          "shelly_host": "IP address or hostname of the Shelly",
-          "shelly_username": "Username (optional)",
-          "shelly_password": "Password (optional)",
-          "camera_entity": "Camera"
-        },
-        "description": "Change address, credentials or camera. The Shelly is checked again; it must be the same Shelly (same MAC address).",
-        "data_description": {
-          "shelly_host": "Static IP address or hostname in the LAN, e.g. 192.168.1.50.",
-          "shelly_username": "Leave empty if no login is configured on the Shelly.",
-          "shelly_password": "Leave empty to keep the current password (with the same username).",
-          "camera_entity": "Camera entity whose picture HomeKit shows when someone rings."
+          "restrict_ip": "Recommended: webhook calls from other devices are rejected. Protects against false alarms from the network.",
+          "allowed_sources": "Comma-separated list, e.g. 192.168.1.50, doorbell.local. Required when the restriction is on. Host names are resolved when the doorbell is loaded."
         }
       }
     },
     "error": {
-      "cannot_connect": "The Shelly cannot be reached. Check IP address and network.",
-      "invalid_auth": "The Shelly rejects username or password.",
-      "not_shelly_gen1": "No first-generation Shelly (Gen1) responds at this address. Shelly Plus/Pro (Gen2 and newer) are not supported.",
-      "unknown": "Unexpected error, see the log for details."
-    },
-    "abort": {
-      "already_configured": "This Shelly is already set up as a doorbell.",
-      "reauth_successful": "Credentials saved.",
-      "reconfigure_successful": "Changes saved.",
-      "unique_id_mismatch": "A different Shelly responds at the new address."
+      "name_required": "Please enter a name.",
+      "no_trigger": "Please enable the webhook or select at least one trigger entity.",
+      "camera_in_use": "This camera already belongs to another doorbell. Each camera can be used only once.",
+      "invalid_source": "At least one entry is neither a valid IP address nor a valid host name.",
+      "source_required": "Please enter at least one IP address or host name, or turn the restriction off."
     },
     "create_entry": {
-      "default": "The doorbell has been set up.\n\n**Webhook URL for the Shelly:**\n`{webhook_url}`\n\nOn the Shelly (web interface): set *Settings → Button Type → Detached Switch* and *I/O URL actions → BUTTON SWITCHED ON URL* = the URL above, enable and save. The URL is also shown in the doorbell options.\n\nThen let the HomeKit accessory be created under *Settings → Repairs*."
+      "default": "The doorbell is set up.\n\n**Webhook URL** (\"—\" = webhook disabled):\n{webhook_hint}\n\nThe URL and all settings can be viewed or changed at any time in the doorbell options. Then let the HomeKit accessory be created under *Settings → System → Repairs*."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Doorbell options",
-        "description": "**Webhook URL for the Shelly:**\n`{webhook_url}`\n\nEnter it on the Shelly under *I/O URL actions → BUTTON SWITCHED ON URL*. Plain HTTP within the local network only.",
+        "description": "**Webhook URL** (\"—\" = webhook disabled):\n{webhook_url}\n\nAny device that calls an HTTP address when the button is pressed works, e.g. Shelly Gen1 (\"I/O URL actions\"), Shelly Gen2 and newer (\"Actions\" or \"Webhooks\"), ESPHome (http_request) or Tasmota (WebSend). HTTP on the local network only; the webhook cannot be reached from the internet.",
         "data": {
-          "restrict_ip": "Only accept the webhook from the Shelly's IP",
-          "allowed_ip": "Different allowed IP address or hostname (optional)",
+          "camera_entity": "Camera",
+          "webhook_enabled": "Accept rings via webhook",
+          "restrict_ip": "Accept webhook only from specific devices",
+          "allowed_sources": "Allowed devices (IP addresses or host names)",
+          "trigger_entities": "Trigger entities",
+          "gong_entity": "Chime switch",
           "auto_off": "Turn \"Ringing\" off after (seconds)",
-          "connectivity": "Monitor Shelly reachability",
           "notify_enabled": "Send an additional push notification",
           "notify_services": "Notification services",
           "notify_title": "Notification title",
           "notify_message": "Notification text"
         },
         "data_description": {
-          "allowed_ip": "Leave empty = IP address of the Shelly.",
-          "auto_off": "Applies to the binary sensor \"Ringing\" (fallback sensor). The doorbell event itself has no duration.",
-          "notify_services": "notify services, e.g. mobile_app_iphone. The snapshot is attached as an image.",
-          "notify_message": "{name} is replaced by the doorbell name.",
-          "restrict_ip": "Prevents false alarms from the network: webhook calls from other devices are rejected.",
-          "connectivity": "Polls the Shelly regularly and shows the result in the binary sensor \"Shelly reachable\".",
-          "notify_title": "Leave empty = \"Es klingelt\"."
+          "camera_entity": "Camera entity whose picture HomeKit shows when the doorbell rings. After a change the HomeKit accessory may have to be created again.",
+          "webhook_enabled": "The doorbell button calls the webhook URL above when pressed (GET or POST, LAN only).",
+          "restrict_ip": "Recommended: webhook calls from other devices are rejected.",
+          "allowed_sources": "Comma-separated list, e.g. 192.168.1.50, doorbell.local. Required when the restriction is on.",
+          "trigger_entities": "Binary sensors and input_boolean ring when they turn on; event, button and input_button entities ring on every new event or press.",
+          "gong_entity": "Switch entity that is turned on for the chime duration when the doorbell rings. Leave empty = no chime.",
+          "auto_off": "Applies to the binary sensor \"Ringing\". The doorbell event itself has no duration.",
+          "notify_services": "notify services, e.g. mobile_app_my_phone. The snapshot is attached as an image.",
+          "notify_title": "Leave empty = default title.",
+          "notify_message": "{name} is replaced by the doorbell name."
         }
       }
     },
     "error": {
-      "invalid_ip": "Not a valid IP address or hostname."
+      "no_trigger": "Please enable the webhook or select at least one trigger entity.",
+      "camera_in_use": "This camera already belongs to another doorbell. Each camera can be used only once.",
+      "invalid_source": "At least one entry is neither a valid IP address nor a valid host name.",
+      "source_required": "Please enter at least one IP address or host name, or turn the restriction off."
     }
   },
   "entity": {
     "binary_sensor": {
       "klingelt": {
         "name": "Ringing"
-      },
-      "shelly_erreichbar": {
-        "name": "Shelly reachable"
       }
     },
     "camera": {
@@ -159,7 +136,7 @@
         "step": {
           "confirm": {
             "title": "Create HomeKit accessory",
-            "description": "A dedicated HomeKit accessory (mode \"accessory\") is created for the camera {camera_entity_id}. The HomeKit Bridge links this device's doorbell automatically, HomePods chime and the iPhone shows the camera picture.\n\nAfterwards enter the pairing code from the notification in the Home app."
+            "description": "A dedicated HomeKit accessory (mode \"accessory\") is created for the camera {camera_entity_id}. The HomeKit Bridge links this device's doorbell automatically: Apple devices such as HomePod and iPhone announce the ring, the iPhone shows the camera picture.\n\nAfterwards enter the pairing code from the notification in the Home app."
           }
         },
         "abort": {
@@ -169,9 +146,9 @@
         }
       }
     },
-    "eingang_nicht_entkoppelt": {
-      "title": "Shelly input of {name} is not detached",
-      "description": "The Shelly {host} uses input mode \"{btn_type}\". In this mode the doorbell button switches the relay directly and the switch \"Mechanical chime\" cannot mute the chime.\n\nOn the Shelly select \"Detached Switch\" under *Settings → Button Type*. This notice disappears the next time the doorbell is reloaded."
+    "gong_waehlen": {
+      "title": "Select the chime switch for {name}",
+      "description": "After the update to version 0.2.0 no chime switch could be assigned automatically to the doorbell {name}. Please select a switch entity in the doorbell options under \"Chime switch\", e.g. the relay from the Shelly, ESPHome or Zigbee integration, or leave the field empty if no chime should be driven.\n\nThis notice disappears when the options are saved. Afterwards – or if no chime is wanted – it can also simply be ignored or dismissed."
     }
   }
 }

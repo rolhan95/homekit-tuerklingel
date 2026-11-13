@@ -15,10 +15,12 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.homekit_tuerklingel import homekit as hk
+from custom_components.homekit_tuerklingel import issues
 from custom_components.homekit_tuerklingel.const import (
     DOMAIN,
+    ISSUE_GONG_SELECT,
     ISSUE_HOMEKIT_SETUP,
-    ISSUE_NOT_DETACHED,
+    ISSUE_NOT_DETACHED_V1,
     KEY_CAMERA,
 )
 from custom_components.homekit_tuerklingel.homekit import HomeKitResult
@@ -27,7 +29,7 @@ from custom_components.homekit_tuerklingel.repairs import (
     async_create_fix_flow,
 )
 
-from .conftest import CAMERA, SHELLY_HOST, SHELLY_MAC
+from .conftest import CAMERA
 
 
 @pytest.fixture(autouse=True)
@@ -42,16 +44,7 @@ def _no_homekit_port_socket():
     ):
         yield
 
-BASE = f"http://{SHELLY_HOST}"
 PROXY_CAMERA = "camera.haustur_kamera"
-
-
-def _mock_shelly(aioclient_mock, *, btn_type: str | None = "detached", settings: dict | None = None):
-    aioclient_mock.get(f"{BASE}/shelly", json={"mac": SHELLY_MAC, "type": "SHSW-1"})
-    if settings is None:
-        settings = {"json": {"relays": [{"btn_type": btn_type}]}}
-    aioclient_mock.get(f"{BASE}/settings", **settings)
-    aioclient_mock.get(f"{BASE}/relay/0", json={"ison": True})
 
 
 def _register_proxy_camera(hass: HomeAssistant, entry: MockConfigEntry) -> str:
@@ -87,9 +80,8 @@ def _homekit_entry(camera: str, *, in_options: bool = False, **kwargs) -> MockCo
     return MockConfigEntry(domain="homekit", data=target, **kwargs)
 
 
-async def _setup(hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock, **shelly) -> str:
+async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> str:
     """Quellkamera-Zustand anlegen, Proxy-Kamera registrieren, Entry einrichten."""
-    _mock_shelly(aioclient_mock, **shelly)
     hass.states.async_set(CAMERA, "idle", {"friendly_name": "Eingang"})
     if hass.config_entries.async_get_entry(entry.entry_id) is None:
         entry.add_to_hass(hass)
@@ -105,9 +97,9 @@ def _issue(hass: HomeAssistant, prefix: str, entry: MockConfigEntry) -> ir.Issue
 
 
 # --------------------------------------------------------------------- Issues
-async def test_issues_created(hass: HomeAssistant, mock_entry, aioclient_mock) -> None:
-    """Ohne HomeKit-Zubehör: fixbarer Hinweis; Eingang 'momentary': zweiter Hinweis."""
-    await _setup(hass, mock_entry, aioclient_mock, btn_type="momentary")
+async def test_issues_created(hass: HomeAssistant, mock_entry) -> None:
+    """Ohne HomeKit-Zubehör: fixbarer Hinweis; kein Shelly-Hinweis mehr."""
+    await _setup(hass, mock_entry)
     issue = _issue(hass, ISSUE_HOMEKIT_SETUP, mock_entry)
     assert issue is not None
     assert issue.is_fixable is True
@@ -115,46 +107,14 @@ async def test_issues_created(hass: HomeAssistant, mock_entry, aioclient_mock) -
     assert issue.translation_key == ISSUE_HOMEKIT_SETUP
     assert issue.translation_placeholders == {"name": "Haustür"}
     assert issue.data == {"entry_id": mock_entry.entry_id}
-
-    issue = _issue(hass, ISSUE_NOT_DETACHED, mock_entry)
-    assert issue is not None
-    assert issue.is_fixable is False
-    assert issue.severity is ir.IssueSeverity.WARNING
-    assert issue.translation_key == ISSUE_NOT_DETACHED
-    assert issue.translation_placeholders == {
-        "name": "Haustür",
-        "host": SHELLY_HOST,
-        "btn_type": "momentary",
-    }
+    assert _issue(hass, ISSUE_NOT_DETACHED_V1, mock_entry) is None
+    assert _issue(hass, ISSUE_GONG_SELECT, mock_entry) is None
 
 
-async def test_detached_issue_removed(hass: HomeAssistant, mock_entry, aioclient_mock) -> None:
-    """Eingang entkoppelt → vorhandener Hinweis wird gelöscht."""
-    mock_entry.add_to_hass(hass)
-    ir.async_create_issue(
-        hass, DOMAIN, f"{ISSUE_NOT_DETACHED}_{mock_entry.entry_id}",
-        is_fixable=False, severity=ir.IssueSeverity.WARNING, translation_key=ISSUE_NOT_DETACHED,
-    )
-    await _setup(hass, mock_entry, aioclient_mock, btn_type="detached")
-    assert _issue(hass, ISSUE_NOT_DETACHED, mock_entry) is None
-
-
-@pytest.mark.parametrize(
-    "settings",
-    [{"status": 401}, {"exc": TimeoutError()}, {"json": {"relays": []}}],
-    ids=["auth", "offline", "unbekannt"],
-)
-async def test_detached_issue_unchanged(
-    hass: HomeAssistant, mock_entry, aioclient_mock, settings
-) -> None:
-    """Shelly nicht abfragbar oder Modus unbekannt → Hinweis bleibt, wie er ist."""
-    mock_entry.add_to_hass(hass)
-    ir.async_create_issue(
-        hass, DOMAIN, f"{ISSUE_NOT_DETACHED}_{mock_entry.entry_id}",
-        is_fixable=False, severity=ir.IssueSeverity.WARNING, translation_key=ISSUE_NOT_DETACHED,
-    )
-    await _setup(hass, mock_entry, aioclient_mock, settings=settings)
-    assert _issue(hass, ISSUE_NOT_DETACHED, mock_entry) is not None
+async def test_issue_ids(hass: HomeAssistant, mock_entry) -> None:
+    """IDs der Hinweise enthalten die entry_id."""
+    assert issues.homekit_issue_id(mock_entry) == f"homekit_einrichten_{mock_entry.entry_id}"
+    assert issues.gong_issue_id(mock_entry) == f"gong_waehlen_{mock_entry.entry_id}"
 
 
 @pytest.mark.parametrize(
@@ -163,16 +123,16 @@ async def test_detached_issue_unchanged(
     ids=["data", "options", "deaktiviert"],
 )
 async def test_homekit_issue_absent_with_accessory(
-    hass: HomeAssistant, mock_entry, aioclient_mock, kwargs
+    hass: HomeAssistant, mock_entry, kwargs
 ) -> None:
     """Vorhandenes Zubehör (data/options, auch deaktiviert) → kein HomeKit-Hinweis."""
     _homekit_entry(PROXY_CAMERA, **kwargs).add_to_hass(hass)
-    await _setup(hass, mock_entry, aioclient_mock)
+    await _setup(hass, mock_entry)
     assert _issue(hass, ISSUE_HOMEKIT_SETUP, mock_entry) is None
 
 
 async def test_homekit_issue_other_entries(
-    hass: HomeAssistant, mock_entry, aioclient_mock
+    hass: HomeAssistant, mock_entry
 ) -> None:
     """Bridge-Modus, andere Kamera oder kaputte Daten zählen nicht."""
     MockConfigEntry(domain="homekit", data={"mode": "bridge"}).add_to_hass(hass)
@@ -183,15 +143,15 @@ async def test_homekit_issue_other_entries(
         domain="homekit", data={"mode": "accessory", "filter": {}}
     ).add_to_hass(hass)
     _homekit_entry(CAMERA).add_to_hass(hass)  # Quellkamera, nicht die Proxy-Kamera
-    await _setup(hass, mock_entry, aioclient_mock)
+    await _setup(hass, mock_entry)
     assert _issue(hass, ISSUE_HOMEKIT_SETUP, mock_entry) is not None
 
 
 async def test_homekit_issue_follows_homekit_entries(
-    hass: HomeAssistant, mock_entry, aioclient_mock
+    hass: HomeAssistant, mock_entry
 ) -> None:
     """Änderungen an HomeKit-Einträgen werden sofort berücksichtigt."""
-    await _setup(hass, mock_entry, aioclient_mock)
+    await _setup(hass, mock_entry)
     assert _issue(hass, ISSUE_HOMEKIT_SETUP, mock_entry) is not None
 
     hk_entry = MockConfigEntry(domain="homekit", data={"name": "x", "port": 21070})
@@ -222,20 +182,23 @@ async def test_homekit_issue_follows_homekit_entries(
     assert _issue(hass, ISSUE_HOMEKIT_SETUP, mock_entry) is None
 
 
-async def test_issues_removed_with_entry(hass: HomeAssistant, mock_entry, aioclient_mock) -> None:
-    """Löschen der Klingel entfernt beide Hinweise."""
-    await _setup(hass, mock_entry, aioclient_mock, btn_type="toggle")
+async def test_issues_removed_with_entry(hass: HomeAssistant, mock_entry) -> None:
+    """Löschen der Klingel entfernt HomeKit- und Gong-Hinweis."""
+    await _setup(hass, mock_entry)
+    ir.async_create_issue(
+        hass, DOMAIN, f"{ISSUE_GONG_SELECT}_{mock_entry.entry_id}",
+        is_fixable=False, severity=ir.IssueSeverity.WARNING, translation_key=ISSUE_GONG_SELECT,
+    )
     assert _issue(hass, ISSUE_HOMEKIT_SETUP, mock_entry) is not None
-    assert _issue(hass, ISSUE_NOT_DETACHED, mock_entry) is not None
+    assert _issue(hass, ISSUE_GONG_SELECT, mock_entry) is not None
     await hass.config_entries.async_remove(mock_entry.entry_id)
     await hass.async_block_till_done()
     assert _issue(hass, ISSUE_HOMEKIT_SETUP, mock_entry) is None
-    assert _issue(hass, ISSUE_NOT_DETACHED, mock_entry) is None
+    assert _issue(hass, ISSUE_GONG_SELECT, mock_entry) is None
 
 
-async def test_issue_without_proxy_camera(hass: HomeAssistant, mock_entry, aioclient_mock) -> None:
+async def test_issue_without_proxy_camera(hass: HomeAssistant, mock_entry) -> None:
     """Fehlt die Proxy-Kamera in der Registry, gibt es kein Zubehör → Hinweis."""
-    _mock_shelly(aioclient_mock)
     mock_entry.add_to_hass(hass)
     assert hk.async_get_proxy_camera_entity_id(hass, mock_entry) is None
     assert hk.async_has_homekit_accessory(hass, mock_entry) is False
@@ -295,13 +258,13 @@ async def test_create_accessory_flow_fails(hass: HomeAssistant, mock_entry, init
 
 
 async def test_create_accessory_real_homekit(
-    hass: HomeAssistant, mock_entry, aioclient_mock
+    hass: HomeAssistant, mock_entry
 ) -> None:
     """Echter HomeKit-Flow: Zubehör angelegt, eingerichtet, Klingel verknüpft.
 
     Nur der Start des HAP-Servers (Zeroconf/Netz) ist ersetzt.
     """
-    proxy = await _setup(hass, mock_entry, aioclient_mock)
+    proxy = await _setup(hass, mock_entry)
     assert proxy == PROXY_CAMERA
     used = hk.HOMEKIT_START_PORT
     MockConfigEntry(domain="homekit", data={"name": "Bridge", "port": used}).add_to_hass(hass)
@@ -360,9 +323,9 @@ async def _confirm(hass: HomeAssistant, flow_id: str) -> dict:
     return await hass.data["repairs"]["flow_manager"].async_configure(flow_id, {})
 
 
-async def test_fix_flow_created(hass: HomeAssistant, mock_entry, aioclient_mock) -> None:
+async def test_fix_flow_created(hass: HomeAssistant, mock_entry) -> None:
     """Bestätigen → Zubehör angelegt, Hinweis verschwindet."""
-    await _setup(hass, mock_entry, aioclient_mock)
+    await _setup(hass, mock_entry)
     result = await _start_fix_flow(hass, mock_entry)
     assert result["description_placeholders"] == {"camera_entity_id": PROXY_CAMERA}
     with (
@@ -378,9 +341,9 @@ async def test_fix_flow_created(hass: HomeAssistant, mock_entry, aioclient_mock)
         assert await hass.config_entries.async_unload(hk_entry.entry_id)
 
 
-async def test_fix_flow_already_exists(hass: HomeAssistant, mock_entry, aioclient_mock) -> None:
+async def test_fix_flow_already_exists(hass: HomeAssistant, mock_entry) -> None:
     """Zubehör inzwischen vorhanden → Abbruch already_exists, Hinweis gelöscht."""
-    await _setup(hass, mock_entry, aioclient_mock)
+    await _setup(hass, mock_entry)
     result = await _start_fix_flow(hass, mock_entry)
     _homekit_entry(PROXY_CAMERA).add_to_hass(hass)  # ohne Dispatcher-Signal
     result = await _confirm(hass, result["flow_id"])
@@ -395,10 +358,10 @@ async def test_fix_flow_already_exists(hass: HomeAssistant, mock_entry, aioclien
     [(HomeKitResult.CAMERA_MISSING, "camera_missing"), (HomeKitResult.FAILED, "homekit_failed")],
 )
 async def test_fix_flow_abort(
-    hass: HomeAssistant, mock_entry, aioclient_mock, outcome, reason
+    hass: HomeAssistant, mock_entry, outcome, reason
 ) -> None:
     """Kamera fehlt bzw. HomeKit-Fehler → Abbruch, Hinweis bleibt."""
-    await _setup(hass, mock_entry, aioclient_mock)
+    await _setup(hass, mock_entry)
     result = await _start_fix_flow(hass, mock_entry)
     with patch(
         "custom_components.homekit_tuerklingel.repairs.async_create_homekit_accessory",
@@ -411,19 +374,19 @@ async def test_fix_flow_abort(
 
 
 async def test_fix_flow_camera_missing_real(
-    hass: HomeAssistant, mock_entry, aioclient_mock
+    hass: HomeAssistant, mock_entry
 ) -> None:
     """Proxy-Kamera ohne Zustand (z. B. Plattform noch nicht geladen) → camera_missing."""
-    await _setup(hass, mock_entry, aioclient_mock)
+    await _setup(hass, mock_entry)
     result = await _start_fix_flow(hass, mock_entry)
     hass.states.async_remove(PROXY_CAMERA)
     result = await _confirm(hass, result["flow_id"])
     assert result["reason"] == "camera_missing"
 
 
-async def test_fix_flow_entry_gone(hass: HomeAssistant, mock_entry, aioclient_mock) -> None:
+async def test_fix_flow_entry_gone(hass: HomeAssistant, mock_entry) -> None:
     """Hinweis zu einem nicht (mehr) vorhandenen Entry → Platzhalter '?', camera_missing."""
-    await _setup(hass, mock_entry, aioclient_mock)  # lädt die Integration (repairs.py)
+    await _setup(hass, mock_entry)  # lädt die Integration (repairs.py)
     ir.async_create_issue(
         hass, DOMAIN, f"{ISSUE_HOMEKIT_SETUP}_weg", is_fixable=True,
         severity=ir.IssueSeverity.WARNING, translation_key=ISSUE_HOMEKIT_SETUP,
