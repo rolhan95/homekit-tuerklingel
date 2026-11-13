@@ -77,19 +77,25 @@ async def _async_update_listener(hass: HomeAssistant, entry: TuerklingelConfigEn
 
 
 def _find_switch_for_mac(hass: HomeAssistant, mac: str | None) -> str | None:
-    """switch-Entität eines Geräts mit dieser MAC (z. B. aus der Shelly-Integration)."""
+    """switch-Entität eines Geräts mit dieser MAC (z. B. aus der Shelly-Integration).
+
+    Geht über die Entitäten und löst deren device_id mit dev_reg.async_get auf:
+    Seit HA 2026.10 kann eine Entität noch auf eine zusammengesetzte Geräte-ID
+    (aufgeteiltes Gerät mehrerer Integrationen) zeigen; nur async_get liefert dafür
+    das Gerät samt Verbindungen. Eine Suche über async_get_devices fände dann
+    zwar das Gerät, aber keine Entitäten.
+    """
     if not mac:
         return None
-    devices = dr.async_get(hass).async_get_devices(
-        connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))}
-    )
-    ent_reg = er.async_get(hass)
-    switches = [
-        e.entity_id
-        for device in devices
-        for e in er.async_entries_for_device(ent_reg, device.id)
-        if e.domain == "switch" and e.disabled_by is None
-    ]
+    wanted = (dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))
+    dev_reg = dr.async_get(hass)
+    switches: list[str] = []
+    for entity in er.async_get(hass).entities.values():
+        if entity.domain != "switch" or entity.disabled_by is not None or not entity.device_id:
+            continue
+        device = dev_reg.async_get(entity.device_id)
+        if device is not None and wanted in device.connections:
+            switches.append(entity.entity_id)
     return switches[0] if len(switches) == 1 else None
 
 

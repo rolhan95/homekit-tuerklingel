@@ -344,7 +344,7 @@ reachable", "input not detached" notice). The existing doorbell is **migrated au
   options. Until then the chime is not driven.
 - The entity "Shelly reachable" and the stored Shelly credentials are removed.
 
-<!-- KOORDINATOR: nach dem Live-Test der Migration ergänzen, was im echten HA beobachtet wurde. -->
+Tested with a real 0.1.1 installation (see test status). Note: before 0.2.1 the chime switch was not found if the Shelly device is shared between several integrations (Home Assistant 2026.10+ splits such devices); 0.2.1 fixes this.
 
 ## Migrating from homebridge-shelly-doorbell
 
@@ -378,12 +378,23 @@ pytest tests --cov=custom_components.homekit_tuerklingel --cov-report=term-missi
 
 ## Test status
 
-Status **0.2.0 (2026-11-13)**.
+Status **0.2.1 (2026-11-13)**.
 
-### Tested in a real Home Assistant (with 0.1.1, HA 2026.11.1, Shelly 1 Gen1, Reolink)
+### Tested in a real Home Assistant (HA 2026.11.1, Shelly 1 Gen1, Reolink)
 
-These functions still exist in 0.2.0; a live re-test with 0.2.0 is pending.
-<!-- KOORDINATOR: nach dem Live-Test mit 0.2.0 bestätigen bzw. ergänzen. -->
+With 0.2.0 (2026-11-13):
+
+- Update 0.1.1 → 0.2.0 via HACS with migration: webhook, source filter (Shelly IP) and camera kept,
+  "Shelly reachable" removed
+- Repair issue "Select chime switch" appears when no switch could be assigned; selecting the switch in
+  the options removes it (the automatic assignment itself did not work in 0.2.0 and is fixed in 0.2.1,
+  see changelog)
+- Entity trigger (`input_boolean`): event 0.2 ms after the state change, snapshot and "Ringing" set
+- Chime muted: the chime switch is not touched
+- If an existing HomeKit bridge includes all cameras, Home Assistant itself creates the HomeKit
+  accessory for the proxy camera on the next start (observed); the repair issue then disappears
+
+With 0.1.1 (still valid in 0.2.x):
 
 - Installation via HACS, adding without restart (HA 2026.11.1)
 - Webhook with GET and POST (`local_only`), event 1–2 ms after the call
@@ -394,7 +405,7 @@ These functions still exist in 0.2.0; a live re-test with 0.2.0 is pending.
 
 ### Covered by automated tests only (0.2.0)
 
-<!-- KOORDINATOR: Anzahl Tests und Abdeckung des 0.2.0-Laufs eintragen. -->
+136 tests, 99 % coverage (local Windows run and Linux CI).
 
 - Setup and options: name, camera, webhook with source filter (IP and host name), entity triggers,
   chime switch

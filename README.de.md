@@ -359,7 +359,7 @@ umgestellt**:
   kein Gong angesteuert.
 - Die Entität „Shelly erreichbar“ und die gespeicherten Shelly-Zugangsdaten werden entfernt.
 
-<!-- KOORDINATOR: nach dem Live-Test der Migration ergänzen, was im echten HA beobachtet wurde. -->
+Mit einer echten 0.1.1-Installation getestet (siehe Teststand). Hinweis: Vor 0.2.1 wurde der Gong-Schalter nicht gefunden, wenn das Shelly-Gerät zu mehreren Integrationen gehört (Home Assistant teilt solche Geräte seit 2026.10 auf); 0.2.1 behebt das.
 
 ## Umstieg von homebridge-shelly-doorbell
 
@@ -393,12 +393,24 @@ pytest tests --cov=custom_components.homekit_tuerklingel --cov-report=term-missi
 
 ## Teststand
 
-Stand **0.2.0 (2026-11-13)**.
+Stand **0.2.1 (2026-11-13)**.
 
-### Im echten Home Assistant getestet (mit 0.1.1, HA 2026.11.1, Shelly 1 Gen1, Reolink)
+### Im echten Home Assistant getestet (HA 2026.11.1, Shelly 1 Gen1, Reolink)
 
-Diese Funktionen gibt es in 0.2.0 weiterhin; ein erneuter Live-Test mit 0.2.0 steht noch aus.
-<!-- KOORDINATOR: nach dem Live-Test mit 0.2.0 bestätigen bzw. ergänzen. -->
+Mit 0.2.0 (2026-11-13):
+
+- Update 0.1.1 → 0.2.0 über HACS mit Migration: Webhook, Quellfilter (Shelly-IP) und Kamera
+  übernommen, „Shelly erreichbar“ entfernt
+- Hinweis „Gong-Schalter wählen“ erscheint, wenn kein Schalter zugeordnet werden konnte; Auswahl in
+  den Optionen entfernt ihn (die automatische Zuordnung selbst griff in 0.2.0 nicht und ist in 0.2.1
+  behoben, siehe Änderungsprotokoll)
+- Entitäts-Auslöser (`input_boolean`): Event 0,2 ms nach dem Zustandswechsel, Snapshot und „Klingelt“
+  gesetzt
+- Gong stumm: Der Gong-Schalter wird nicht geschaltet
+- Nimmt eine vorhandene HomeKit-Bridge alle Kameras auf, legt Home Assistant das HomeKit-Zubehör für
+  die Proxy-Kamera beim nächsten Start selbst an (beobachtet); der Reparatur-Hinweis verschwindet dann
+
+Mit 0.1.1 (gilt in 0.2.x weiter):
 
 - Installation über HACS, Hinzufügen ohne Neustart (HA 2026.11.1)
 - Webhook mit GET und POST (`local_only`), Event 1–2 ms nach dem Aufruf
@@ -410,7 +422,7 @@ Diese Funktionen gibt es in 0.2.0 weiterhin; ein erneuter Live-Test mit 0.2.0 st
 
 ### Nur durch automatische Tests geprüft (0.2.0)
 
-<!-- KOORDINATOR: Anzahl Tests und Abdeckung des 0.2.0-Laufs eintragen. -->
+136 Tests, Abdeckung 99 % (lokaler Lauf unter Windows und Linux-CI).
 
 - Einrichtung und Optionen: Name, Kamera, Webhook mit Quellfilter (IP und Hostname),
   Entitäts-Auslöser, Gong-Schalter

@@ -3,6 +3,29 @@
 Alle Änderungen an dieser Integration. Jede Änderung erhöht die Version in
 `custom_components/homekit_tuerklingel/manifest.json`; jede Version bekommt hier einen Abschnitt.
 
+## [0.2.1] – 2026-11-13
+
+### Behoben
+
+- Migration aus 0.1.x: Der Gong-Schalter des Shelly wurde nicht gefunden, wenn das Gerät zu mehreren
+  Integrationen gehört (Home Assistant teilt solche Geräte seit 2026.10 auf; die Entität zeigt dann auf
+  die alte, zusammengesetzte Geräte-ID). Die Suche geht jetzt über die Entitäten. Wer bereits auf 0.2.0
+  umgestellt wurde, wählt den Gong-Schalter einmal in den Optionen (Hinweis „Gong-Schalter wählen“).
+
+### Getestet (echter Home Assistant 2026.11.1, Shelly 1 Gen1, Reolink, mit 0.2.0)
+
+- Update 0.1.1 → 0.2.0 über HACS: Migration von Webhook, Quellfilter und Kamera; Hinweis
+  „Gong-Schalter wählen“ und dessen Entfernen über die Optionen
+- Entitäts-Auslöser (`input_boolean`), Gong stumm
+- Automatisches Anlegen des HomeKit-Zubehörs durch eine vorhandene Bridge, die alle Kameras aufnimmt
+- 136 automatische Tests, Abdeckung 99 %
+
+### Noch nicht getestet
+
+- Die korrigierte automatische Gong-Zuordnung an einem geteilten Gerät im echten Home Assistant
+  (die Installation war schon umgestellt)
+- Gong-Impuls am echten Relais, HomeKit-Pairing, HomePods, Push-Benachrichtigung
+
 ## [0.2.0] – 2026-11-13
 
 Die Integration ist jetzt **universell**: beliebiger Klingel-Auslöser, beliebiger Gong-Schalter,
