@@ -26,7 +26,7 @@ jobs:
       - name: Install system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libturbojpeg ffmpeg
+          sudo apt-get install -y --no-install-recommends libturbojpeg0
 
       - name: Install test requirements
         run: |
