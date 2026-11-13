@@ -17,18 +17,20 @@ if sys.platform == "win32":  # pragma: no cover - nur lokale Entwicklung unter W
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.homekit_tuerklingel.const import (
+    CONF_ALLOWED_SOURCES,
     CONF_CAMERA_ENTITY,
-    CONF_SHELLY_HOST,
-    CONF_SHELLY_MAC,
-    CONF_SHELLY_PASSWORD,
-    CONF_SHELLY_USERNAME,
+    CONF_GONG_ENTITY,
+    CONF_RESTRICT_IP,
+    CONF_TRIGGER_ENTITIES,
+    CONF_WEBHOOK_ENABLED,
     CONF_WEBHOOK_ID,
     DOMAIN,
 )
 
 SHELLY_HOST = "192.168.1.50"
-SHELLY_MAC = "AABBCCDDEEFF"
 CAMERA = "camera.eingang"
+GONG = "switch.gong_relais"
+TRIGGER = "binary_sensor.klingeltaster"
 WEBHOOK_ID = "test_webhook_id_0123456789"
 
 
@@ -61,19 +63,17 @@ def _kein_echtes_netz(mock_async_zeroconf):
 
 @pytest.fixture
 def mock_entry() -> MockConfigEntry:
-    """Ein fertig eingerichteter Config-Entry (noch nicht hinzugefügt)."""
+    """Eingerichtete Klingel (Version 2): Webhook nur von SHELLY_HOST, Taster-Entität, Gong-Schalter."""
     return MockConfigEntry(
         domain=DOMAIN,
         title="Haustür",
-        unique_id=SHELLY_MAC,
-        data={
-            CONF_SHELLY_HOST: SHELLY_HOST,
-            CONF_SHELLY_USERNAME: "admin",
-            CONF_SHELLY_PASSWORD: "geheim",
-            CONF_SHELLY_MAC: SHELLY_MAC,
-            CONF_CAMERA_ENTITY: CAMERA,
-            CONF_WEBHOOK_ID: WEBHOOK_ID,
+        data={CONF_WEBHOOK_ID: WEBHOOK_ID, CONF_CAMERA_ENTITY: CAMERA},
+        options={
+            CONF_WEBHOOK_ENABLED: True,
+            CONF_RESTRICT_IP: True,
+            CONF_ALLOWED_SOURCES: [SHELLY_HOST],
+            CONF_TRIGGER_ENTITIES: [TRIGGER],
+            CONF_GONG_ENTITY: GONG,
         },
-        options={},
-        version=1,
+        version=2,
     )

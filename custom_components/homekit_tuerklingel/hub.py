@@ -1,41 +1,53 @@
-"""Zentrale Logik einer Klingel: Webhook, Entprellung, Gong, Snapshot, Push."""
+"""Zentrale Logik einer Klingel: Auslöser, Entprellung, Gong, Snapshot, Push.
+
+Auslöser (beliebig kombinierbar):
+- Webhook (GET/POST, nur LAN), optional nur von bestimmten Quell-IPs
+- HA-Entitäten: binary_sensor/input_boolean (Wechsel auf 'on'),
+  event/button/input_button (jedes neue Ereignis bzw. jeder Druck)
+
+Gong (optional): beliebige switch-Entität, die für die Impulsdauer eingeschaltet wird.
+"""
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from datetime import datetime
 import ipaddress
 import logging
 import socket
 import time
-from collections.abc import Callable
-from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
+
 from homeassistant.components import camera, webhook
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    callback,
+)
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    CONF_ALLOWED_IP,
+    CONF_ALLOWED_SOURCES,
     CONF_AUTO_OFF,
     CONF_CAMERA_ENTITY,
-    CONF_CONNECTIVITY,
+    CONF_GONG_ENTITY,
     CONF_NOTIFY_ENABLED,
     CONF_NOTIFY_MESSAGE,
     CONF_NOTIFY_SERVICES,
     CONF_NOTIFY_TITLE,
     CONF_RESTRICT_IP,
-    CONF_SHELLY_HOST,
-    CONF_SHELLY_PASSWORD,
-    CONF_SHELLY_USERNAME,
+    CONF_TRIGGER_ENTITIES,
+    CONF_WEBHOOK_ENABLED,
     CONF_WEBHOOK_ID,
-    CONNECTIVITY_INTERVAL,
     DEFAULT_AUTO_OFF,
-    DEFAULT_CONNECTIVITY,
     DEFAULT_COOLDOWN,
     DEFAULT_GONG_DURATION,
     DEFAULT_GONG_ENABLED,
@@ -43,11 +55,11 @@ from .const import (
     DEFAULT_NOTIFY_MESSAGE,
     DEFAULT_NOTIFY_TITLE,
     DEFAULT_RESTRICT_IP,
+    DEFAULT_WEBHOOK_ENABLED,
     DOMAIN,
     SNAPSHOT_TIMEOUT,
     WEBHOOK_METHODS,
 )
-from .shelly import ShellyAuthError, ShellyError, ShellyGen1Client
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -57,8 +69,13 @@ _LOGGER = logging.getLogger(__name__)
 RingListener = Callable[[datetime], None]
 UpdateListener = Callable[[], None]
 
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
-def _normalize_ip(value: str | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+# Domains, bei denen jede neue Zustandsänderung ein Klingeln ist (Zeitstempel-Zustand)
+_STATELESS_DOMAINS = ("event", "button", "input_button")
+
+
+def normalize_ip(value: str | None) -> IPAddress | None:
     """IP-Adresse parsen; IPv4-gemappte IPv6-Adressen auf IPv4 abbilden."""
     if not value:
         return None
@@ -71,6 +88,26 @@ def _normalize_ip(value: str | None) -> ipaddress.IPv4Address | ipaddress.IPv6Ad
     return addr
 
 
+def is_ring_transition(entity_id: str, old_state: Any, new_state: Any) -> bool:
+    """Ist dieser Zustandswechsel einer Auslöser-Entität ein Klingeln?
+
+    - event/button/input_button: jeder neue gültige Zustand, sofern es vorher
+      einen gültigen (nicht 'unavailable') Zustand gab – so klingelt es nicht,
+      wenn die Entität nur verfügbar wird (gleiche Logik wie die HomeKit Bridge).
+    - binary_sensor/input_boolean: Wechsel von 'off' (oder anderem) auf 'on',
+      nicht aber von 'unavailable'/'unknown' auf 'on' (z. B. nach Neustart).
+    """
+    if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        return False
+    if old_state is None or old_state.state == STATE_UNAVAILABLE:
+        return False
+    if entity_id.split(".", 1)[0] in _STATELESS_DOMAINS:
+        return new_state.state != old_state.state
+    if old_state.state == STATE_UNKNOWN:
+        return False
+    return new_state.state == STATE_ON and old_state.state != STATE_ON
+
+
 class TuerklingelHub:
     """Laufzeitobjekt einer Klingel (entry.runtime_data)."""
 
@@ -78,15 +115,8 @@ class TuerklingelHub:
         """Hub aus den Daten des Config-Entry anlegen."""
         self.hass = hass
         self.entry = entry
-        data = entry.data
-        self.webhook_id: str = data[CONF_WEBHOOK_ID]
-        self.camera_entity_id: str = data[CONF_CAMERA_ENTITY]
-        self.client = ShellyGen1Client(
-            async_get_clientsession(hass),
-            data[CONF_SHELLY_HOST],
-            data.get(CONF_SHELLY_USERNAME) or None,
-            data.get(CONF_SHELLY_PASSWORD) or None,
-        )
+        self.webhook_id: str = entry.data[CONF_WEBHOOK_ID]
+        self.camera_entity_id: str = entry.data[CONF_CAMERA_ENTITY]
 
         # Über switch-/number-Entitäten gesetzt (dort wiederhergestellt)
         self.gong_enabled: bool = DEFAULT_GONG_ENABLED
@@ -98,12 +128,14 @@ class TuerklingelHub:
         self._last_ring_mono: float | None = None
         self.snapshot: bytes | None = None
         self.snapshot_time: datetime | None = None
-        self.shelly_available: bool | None = None
         self.image_entity_id: str | None = None
         """Wird von der image-Entität gesetzt (für den Push-Anhang)."""
+        self.event_entity_id: str | None = None
+        """Wird von der event-Entität gesetzt (Schutz vor Schleifen)."""
 
         self.stats: dict[str, Any] = {
             "webhook_calls": 0,
+            "entity_triggers": 0,
             "rings": 0,
             "debounced": 0,
             "rejected_ip": 0,
@@ -114,12 +146,12 @@ class TuerklingelHub:
             "last_call": None,
         }
 
-        self._allowed_ips: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+        self._allowed_ips: set[IPAddress] = set()
         self._ring_listeners: list[RingListener] = []
         self._snapshot_listeners: list[UpdateListener] = []
-        self._availability_listeners: list[UpdateListener] = []
-        self._unsub_poll: CALLBACK_TYPE | None = None
+        self._unsub_triggers: CALLBACK_TYPE | None = None
         self._webhook_registered = False
+        self._gong_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ Optionen
     def _opt(self, key: str, default: Any) -> Any:
@@ -131,99 +163,102 @@ class TuerklingelHub:
         return self.entry.title
 
     @property
+    def webhook_enabled(self) -> bool:
+        """Klingeln per Webhook annehmen."""
+        return bool(self._opt(CONF_WEBHOOK_ENABLED, DEFAULT_WEBHOOK_ENABLED))
+
+    @property
     def restrict_ip(self) -> bool:
-        """Nur Aufrufe von der erlaubten IP annehmen."""
+        """Nur Aufrufe von den erlaubten Quellen annehmen."""
         return bool(self._opt(CONF_RESTRICT_IP, DEFAULT_RESTRICT_IP))
 
     @property
-    def allowed_host(self) -> str:
-        """Erlaubte Quelle (IP oder Hostname); Standard ist die Shelly-Adresse."""
-        return (self._opt(CONF_ALLOWED_IP, "") or self.entry.data[CONF_SHELLY_HOST]).strip()
+    def allowed_sources(self) -> list[str]:
+        """Erlaubte Quellen (IP-Adressen oder Hostnamen)."""
+        return [str(s).strip() for s in self._opt(CONF_ALLOWED_SOURCES, []) or [] if str(s).strip()]
+
+    @property
+    def trigger_entities(self) -> list[str]:
+        """Auslöser-Entitäten."""
+        return list(self._opt(CONF_TRIGGER_ENTITIES, []) or [])
+
+    @property
+    def gong_entity_id(self) -> str | None:
+        """switch-Entität des mechanischen Gongs (None = kein Gong)."""
+        return self._opt(CONF_GONG_ENTITY, None) or None
 
     @property
     def auto_off(self) -> int:
         """Sekunden bis der Binärsensor 'Klingelt' wieder aus geht."""
         return int(self._opt(CONF_AUTO_OFF, DEFAULT_AUTO_OFF))
 
-    @property
-    def connectivity_enabled(self) -> bool:
-        """Erreichbarkeit des Shelly prüfen."""
-        return bool(self._opt(CONF_CONNECTIVITY, DEFAULT_CONNECTIVITY))
-
     # ------------------------------------------------------------- Lebenszyklus
     async def async_setup(self) -> None:
-        """Webhook registrieren und ggf. die Erreichbarkeitsprüfung starten."""
-        await self._async_resolve_allowed()
-        webhook.async_register(
-            self.hass,
-            DOMAIN,
-            self.name,
-            self.webhook_id,
-            self._async_handle_webhook,
-            local_only=True,
-            allowed_methods=WEBHOOK_METHODS,
-        )
-        self._webhook_registered = True
-        if self.connectivity_enabled:
-            self.entry.async_create_background_task(
-                self.hass, self.async_update_availability(), "tuerklingel_ping"
-            )
-            self._unsub_poll = async_track_time_interval(
+        """Webhook registrieren und Auslöser-Entitäten beobachten."""
+        if self.webhook_enabled:
+            await self._async_resolve_allowed()
+            webhook.async_register(
                 self.hass,
-                self._async_poll,
-                timedelta(seconds=CONNECTIVITY_INTERVAL),
-                name="tuerklingel_ping",
+                DOMAIN,
+                self.name,
+                self.webhook_id,
+                self._async_handle_webhook,
+                local_only=True,
+                allowed_methods=WEBHOOK_METHODS,
+            )
+            self._webhook_registered = True
+        if self.trigger_entities:
+            self._unsub_triggers = async_track_state_change_event(
+                self.hass, self.trigger_entities, self._async_trigger_changed
             )
 
     @callback
     def async_unload(self) -> None:
-        """Webhook abmelden und Timer beenden."""
+        """Webhook abmelden und Beobachtung beenden."""
         if self._webhook_registered:
             webhook.async_unregister(self.hass, self.webhook_id)
             self._webhook_registered = False
-        if self._unsub_poll is not None:
-            self._unsub_poll()
-            self._unsub_poll = None
+        if self._unsub_triggers is not None:
+            self._unsub_triggers()
+            self._unsub_triggers = None
 
     async def _async_resolve_allowed(self) -> None:
-        """Erlaubte Quell-IP(s) bestimmen; Hostnamen einmalig auflösen."""
-        host = self.allowed_host
+        """Erlaubte Quell-IPs bestimmen; Hostnamen einmalig auflösen."""
         self._allowed_ips = set()
-        if (addr := _normalize_ip(host)) is not None:
-            self._allowed_ips.add(addr)
-            return
-        try:
-            infos = await self.hass.loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-        except OSError as err:
-            _LOGGER.warning(
-                "%s: erlaubte Quelle %s nicht auflösbar (%s) – IP-Filter lässt nichts durch",
-                self.name,
-                host,
-                err,
-            )
-            return
-        for info in infos:
-            if (addr := _normalize_ip(str(info[4][0]))) is not None:
+        for host in self.allowed_sources:
+            if (addr := normalize_ip(host)) is not None:
                 self._allowed_ips.add(addr)
+                continue
+            try:
+                infos = await self.hass.loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+            except OSError as err:
+                _LOGGER.warning(
+                    "%s: erlaubte Quelle %s nicht auflösbar (%s)", self.name, host, err
+                )
+                continue
+            for info in infos:
+                if (addr := normalize_ip(str(info[4][0]))) is not None:
+                    self._allowed_ips.add(addr)
 
     def ip_allowed(self, remote: str | None) -> bool:
         """Prüfen, ob die Quell-IP den Webhook auslösen darf."""
         if not self.restrict_ip:
             return True
-        addr = _normalize_ip(remote)
+        addr = normalize_ip(remote)
         return addr is not None and addr in self._allowed_ips
 
     # ------------------------------------------------------------------ Webhook
     async def _async_handle_webhook(
         self, hass: HomeAssistant, webhook_id: str, request: web.Request
     ) -> web.Response:
-        """Webhook-Aufruf des Shelly (GET oder POST)."""
+        """Webhook-Aufruf (GET oder POST)."""
         t0 = time.monotonic()
         remote = request.remote
         method = request.method
         self.stats["webhook_calls"] += 1
         self.stats["last_call"] = {
             "time": dt_util.utcnow().isoformat(),
+            "source": "webhook",
             "method": method,
             "remote": remote,
         }
@@ -236,13 +271,31 @@ class TuerklingelHub:
                 "%s: Webhook-Aufruf von %s abgelehnt (erlaubt: %s)",
                 self.name,
                 remote,
-                self.allowed_host,
+                ", ".join(self.allowed_sources) or "-",
             )
             return web.Response(status=403, text="forbidden")
 
         rang = self.async_ring(source=f"Webhook {method} von {remote}", started=t0)
         self.stats["last_call"]["result"] = "ring" if rang else "debounced"
         return web.Response(status=200, text="ok" if rang else "debounced")
+
+    # ------------------------------------------------------- Auslöser-Entitäten
+    @callback
+    def _async_trigger_changed(self, event: Event[EventStateChangedData]) -> None:
+        t0 = time.monotonic()
+        entity_id = event.data["entity_id"]
+        if entity_id == self.event_entity_id:
+            return
+        if not is_ring_transition(entity_id, event.data["old_state"], event.data["new_state"]):
+            return
+        self.stats["entity_triggers"] += 1
+        self.stats["last_call"] = {
+            "time": dt_util.utcnow().isoformat(),
+            "source": "entity",
+            "entity_id": entity_id,
+        }
+        rang = self.async_ring(source=f"Entität {entity_id}", started=t0)
+        self.stats["last_call"]["result"] = "ring" if rang else "debounced"
 
     # ----------------------------------------------------------------- Klingeln
     @callback
@@ -282,24 +335,41 @@ class TuerklingelHub:
         await asyncio.gather(self.async_gong(), self._async_snapshot_and_notify())
 
     async def async_gong(self) -> None:
-        """Mechanischen Gong pulsen, falls eingeschaltet."""
+        """Gong-Schalter für die Impulsdauer einschalten (falls konfiguriert und aktiv)."""
+        gong = self.gong_entity_id
+        if gong is None:
+            return
         if not self.gong_enabled:
             _LOGGER.debug("%s: Gong stumm geschaltet", self.name)
             return
-        try:
-            await self.client.async_pulse(self.gong_duration)
-        except ShellyAuthError:
-            self.stats["gong_errors"] += 1
-            _LOGGER.error(
-                "%s: Shelly lehnt die Zugangsdaten ab – Gong nicht ausgelöst", self.name
-            )
-            self.entry.async_start_reauth(self.hass)
-        except ShellyError as err:
-            self.stats["gong_errors"] += 1
-            _LOGGER.warning("%s: Gong konnte nicht ausgelöst werden: %s", self.name, err)
-        else:
+        if self._gong_lock.locked():
+            _LOGGER.debug("%s: Gong läuft bereits", self.name)
+            return
+        async with self._gong_lock:
+            try:
+                await self.hass.services.async_call(
+                    "switch", "turn_on", {"entity_id": gong}, blocking=True
+                )
+            except (HomeAssistantError, ValueError) as err:
+                self.stats["gong_errors"] += 1
+                _LOGGER.warning("%s: Gong %s nicht einschaltbar: %s", self.name, gong, err)
+                return
+            try:
+                await asyncio.sleep(self.gong_duration)
+            finally:
+                # Auch beim Entladen/Abbruch sicher wieder ausschalten
+                await asyncio.shield(self._async_gong_off(gong))
             self.stats["gong_pulses"] += 1
-            _LOGGER.debug("%s: Gong %.1f s gepulst", self.name, self.gong_duration)
+            _LOGGER.debug("%s: Gong %s %.1f s gepulst", self.name, gong, self.gong_duration)
+
+    async def _async_gong_off(self, gong: str) -> None:
+        try:
+            await self.hass.services.async_call(
+                "switch", "turn_off", {"entity_id": gong}, blocking=True
+            )
+        except (HomeAssistantError, ValueError) as err:
+            self.stats["gong_errors"] += 1
+            _LOGGER.warning("%s: Gong %s nicht ausschaltbar: %s", self.name, gong, err)
 
     async def _async_snapshot_and_notify(self) -> None:
         await self.async_take_snapshot()
@@ -354,24 +424,6 @@ class TuerklingelHub:
                 self.stats["notify_errors"] += 1
                 _LOGGER.warning("%s: Push über notify.%s fehlgeschlagen: %s", self.name, svc, err)
 
-    # ------------------------------------------------------------ Erreichbarkeit
-    async def _async_poll(self, _now: datetime) -> None:
-        await self.async_update_availability()
-
-    async def async_update_availability(self) -> None:
-        """Shelly anpingen und Änderungen melden (einmalig loggen)."""
-        available = await self.client.async_ping()
-        if available == self.shelly_available:
-            return
-        if available:
-            if self.shelly_available is False:
-                _LOGGER.info("%s: Shelly %s wieder erreichbar", self.name, self.client.host)
-        else:
-            _LOGGER.info("%s: Shelly %s nicht erreichbar", self.name, self.client.host)
-        self.shelly_available = available
-        for listener in list(self._availability_listeners):
-            listener()
-
     # ---------------------------------------------------------------- Listener
     @callback
     def async_add_ring_listener(self, listener: RingListener) -> CALLBACK_TYPE:
@@ -384,9 +436,3 @@ class TuerklingelHub:
         """Listener für neue Snapshots registrieren."""
         self._snapshot_listeners.append(listener)
         return lambda: self._snapshot_listeners.remove(listener)
-
-    @callback
-    def async_add_availability_listener(self, listener: UpdateListener) -> CALLBACK_TYPE:
-        """Listener für die Shelly-Erreichbarkeit registrieren."""
-        self._availability_listeners.append(listener)
-        return lambda: self._availability_listeners.remove(listener)
